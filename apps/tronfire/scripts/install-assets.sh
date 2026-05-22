@@ -47,6 +47,7 @@ check_gzip() {
   if ! gzip -t "$dest" >/dev/null 2>&1; then
     echo "[assets] Arquivo invalido para $label: $dest" >&2
     echo "[assets] O download nao parece ser um .tar.gz valido. Verifique se o link e publico/direto." >&2
+    echo "[assets] O link atual pode estar baixando uma pagina HTML. Publique o arquivo no GitHub ou copie manualmente para este caminho." >&2
     echo "[assets] Primeiros bytes do arquivo:" >&2
     head -c 120 "$dest" >&2 || true
     echo >&2

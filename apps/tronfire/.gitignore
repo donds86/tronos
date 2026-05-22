@@ -18,3 +18,5 @@ storage/
 *.rar
 *.log
 .DS_Store
+!docker/firebird25/FirebirdCS-2.5.9.27139-0.amd64.tar.gz
+!docker/firebird25/template.fdb
