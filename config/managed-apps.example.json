@@ -5,6 +5,9 @@
       "type": "compose",
       "enabled": true,
       "composeFile": "apps/tronfire/docker-compose.yml",
+      "composeFiles": [
+        "apps/tronfire/docker-compose.yml"
+      ],
       "projectName": "tronfire",
       "healthUrl": "http://127.0.0.1:8081/health",
       "containers": [
@@ -21,6 +24,9 @@
       "type": "compose",
       "enabled": false,
       "composeFile": "apps/troncomanda/docker-compose.yml",
+      "composeFiles": [
+        "apps/troncomanda/docker-compose.yml"
+      ],
       "projectName": "troncomanda",
       "healthUrl": "http://127.0.0.1:8091/health",
       "containers": [

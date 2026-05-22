@@ -59,6 +59,7 @@ fi
 if ! id "$USER_NAME" >/dev/null 2>&1; then
   useradd --system --gid "$GROUP_NAME" --home-dir "$APP_DIR" --shell /usr/sbin/nologin "$USER_NAME"
 fi
+usermod -aG docker "$USER_NAME" || true
 
 mkdir -p "$APP_DIR" "$ENV_DIR" "$APP_DIR/state" "$APP_DIR/config" "$APP_DIR/logs" /opt/tronfire-storage
 
@@ -78,6 +79,10 @@ if [ ! -f "$APP_DIR/config/managed-apps.json" ]; then
   cp "$APP_DIR/config/managed-apps.example.json" "$APP_DIR/config/managed-apps.json"
 fi
 
+if [ "${TRONSOFTOS_SKIP_WIZARD:-false}" != "true" ]; then
+  bash "$APP_DIR/scripts/configure-wizard.sh"
+fi
+
 echo "Preparando frontend..."
 if [ -f "$APP_DIR/frontend/package.json" ]; then
   cd "$APP_DIR/frontend"
@@ -91,6 +96,9 @@ if [ ! -f "$APP_DIR/apps/tronfire/.env" ]; then
 fi
 cd "$APP_DIR/apps/tronfire"
 bash scripts/install-assets.sh
+if [ -f "$APP_DIR/apps/tronfire/docker/firebird25/FirebirdCS-2.5.9.27139-0.amd64.tar.gz" ]; then
+  tar -tzf "$APP_DIR/apps/tronfire/docker/firebird25/FirebirdCS-2.5.9.27139-0.amd64.tar.gz" >/dev/null
+fi
 STORAGE_ROOT=/opt/tronfire-storage bash "$APP_DIR/apps/tronfire/scripts/init-storage.sh"
 if [ -f "$APP_DIR/apps/tronfire/docker/firebird25/template.fdb" ]; then
   cp "$APP_DIR/apps/tronfire/docker/firebird25/template.fdb" /opt/tronfire-storage/firebird/templates/template.fdb
@@ -106,9 +114,19 @@ chmod +x "$APP_DIR/scripts/"*.sh "$APP_DIR/infra/keepalived/check-tronsoftos.sh"
 
 echo "Subindo TronFire e aplicando migrations..."
 cd "$APP_DIR/apps/tronfire"
-docker compose up -d --build
-docker compose exec -T backend npx prisma migrate deploy
-docker compose exec -T backend node prisma/seed.js
+set -a
+. "$APP_DIR/apps/tronfire/.env"
+set +a
+if [ "${FIREBIRD_EXEC_MODE:-container}" = "host" ]; then
+  bash "$APP_DIR/scripts/install-firebird25-host.sh"
+  docker compose -f docker-compose.yml -f docker-compose.host-firebird.yml up -d --build
+  docker compose -f docker-compose.yml -f docker-compose.host-firebird.yml exec -T backend npx prisma migrate deploy
+  docker compose -f docker-compose.yml -f docker-compose.host-firebird.yml exec -T backend node prisma/seed.js
+else
+  docker compose up -d --build
+  docker compose exec -T backend npx prisma migrate deploy
+  docker compose exec -T backend node prisma/seed.js
+fi
 
 systemctl daemon-reload
 systemctl enable --now tronsoftos.service

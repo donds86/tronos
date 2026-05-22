@@ -32,6 +32,7 @@ infra/
     tronsoftos-rclone-backup.* Timer/serviço para upload rclone no host
 scripts/
   firebird-rsync-sync.sh      Sincronização Firebird com rsync
+  install-firebird25-host.sh  Instala Firebird 2.5.9 no Debian/host
   manage-containers.sh        Operações para tronfire/troncomanda
   tronfire-catalog-export.sh  Exporta catálogo PostgreSQL do TronFire
   tronfire-catalog-import.sh  Importa catálogo PostgreSQL do TronFire no standby
@@ -56,6 +57,18 @@ install.sh                    Instalador inicial para Debian
 
 ```bash
 sudo ./install.sh
+```
+
+O instalador chama um wizard interativo. Para reconfigurar depois:
+
+```bash
+sudo /opt/tronsoftos/scripts/configure-wizard.sh
+```
+
+Para rodar o instalador sem wizard:
+
+```bash
+sudo TRONSOFTOS_SKIP_WIZARD=true ./install.sh
 ```
 
 Depois ajuste:

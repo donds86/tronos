@@ -1,0 +1,26 @@
+services:
+  firebird:
+    profiles:
+      - container-firebird-disabled
+
+  backend:
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      FIREBIRD_EXEC_MODE: host
+      FIREBIRD_BIN: /usr/local/firebird/bin
+    volumes:
+      - /usr/local/firebird:/usr/local/firebird:ro
+      - /opt/tronfire-storage/firebird:/firebird
+
+  worker:
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      FIREBIRD_EXEC_MODE: host
+      FIREBIRD_BIN: /usr/local/firebird/bin
+    volumes:
+      - /usr/local/firebird:/usr/local/firebird:ro
+      - /opt/tronfire-storage/firebird:/firebird

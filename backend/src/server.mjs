@@ -73,6 +73,7 @@ function publicApp(app) {
     type: app.type,
     enabled: !!app.enabled,
     projectName: app.projectName,
+    composeFiles: app.composeFiles || (app.composeFile ? [app.composeFile] : []),
     healthUrl: app.healthUrl,
     containers: app.containers || [],
     haAware: !!app.haAware
@@ -235,8 +236,12 @@ function findApp(name) {
 async function appAction(app, action) {
   if (!['up', 'stop', 'restart', 'pull'].includes(action)) throw new Error('invalid action');
   if (app.type !== 'compose') throw new Error('only compose apps are supported');
-  const composeFile = path.resolve(appRoot, app.composeFile);
-  const args = ['compose', '-p', app.projectName || app.name, '-f', composeFile];
+  const composeFiles = app.composeFiles || (app.composeFile ? [app.composeFile] : []);
+  if (!composeFiles.length) throw new Error('compose file not configured');
+  const args = ['compose', '-p', app.projectName || app.name];
+  for (const composeFile of composeFiles) {
+    args.push('-f', path.resolve(appRoot, composeFile));
+  }
   if (action === 'up') args.push('up', '-d');
   else if (action === 'restart') args.push('restart');
   else args.push(action);
