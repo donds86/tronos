@@ -1,0 +1,125 @@
+name: tronfire
+
+services:
+  firebird:
+    build:
+      context: ./docker/firebird25
+    image: tronfire-firebird25-sc:2.5.9
+    container_name: tronfire_firebird25
+    restart: unless-stopped
+    environment:
+      ISC_PASSWORD: ${FIREBIRD_PASSWORD}
+      TRONFIRE_DEFAULT_DB: /firebird/templates/template.fdb
+    ports:
+      - "0.0.0.0:${TRONFIRE_FIREBIRD_PORT:-3050}:3050"
+    volumes:
+      - ${STORAGE_ROOT}/firebird/data:/firebird/data
+      - ${STORAGE_ROOT}/firebird/backups:/firebird/backups
+      - ${STORAGE_ROOT}/firebird/uploads:/firebird/uploads
+      - ${STORAGE_ROOT}/firebird/templates:/firebird/templates
+      - ${STORAGE_ROOT}/firebird/standby:/firebird/standby
+      - ${STORAGE_ROOT}/firebird/restore-work:/firebird/restore-work
+      - ${STORAGE_ROOT}/firebird/quarantine:/firebird/quarantine
+      - ${STORAGE_ROOT}/firebird/logs:/firebird/logs
+      - ${STORAGE_ROOT}/firebird/scripts:/firebird/scripts
+    healthcheck:
+      test: ["CMD-SHELL", "test -x /usr/local/firebird/bin/gbak && test -x /usr/local/firebird/bin/gfix && test -x /usr/local/firebird/bin/gstat && test -x /usr/local/firebird/bin/isql"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: tronfire_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tronfire
+      POSTGRES_USER: tronfire
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ${STORAGE_ROOT}/postgres:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: tronfire_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - ${STORAGE_ROOT}/redis:/data
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: tronfire_backend
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - redis
+      - firebird
+    ports:
+      - "0.0.0.0:${TRONFIRE_PANEL_PORT:-8081}:8080"
+    environment:
+      NODE_ENV: production
+      APP_NAME: TronFire
+      APP_ROOT: ${APP_ROOT}
+      STORAGE_ROOT: ${STORAGE_ROOT}
+      DATABASE_URL: postgresql://tronfire:${POSTGRES_PASSWORD}@postgres:5432/tronfire
+      REDIS_URL: redis://redis:6379
+      SESSION_SECRET: ${SESSION_SECRET}
+      FIREBIRD_CONTAINER: tronfire_firebird25
+      FIREBIRD_EXEC_MODE: ${FIREBIRD_EXEC_MODE:-container}
+      FIREBIRD_BIN: /usr/local/firebird/bin
+      FIREBIRD_PASSWORD: ${FIREBIRD_PASSWORD}
+      FIREBIRD_TEMPLATE_PATH: /firebird/templates/template.fdb
+      TRONFIRE_DEPLOYMENT_MODE: ${TRONFIRE_DEPLOYMENT_MODE:-simple}
+      TRONFIRE_NODE_ROLE: ${TRONFIRE_NODE_ROLE:-primary}
+      TRONSOFTOS_NODE_NAME: ${TRONSOFTOS_NODE_NAME:-}
+      TRONSOFTOS_CLUSTER_LOCK: ${TRONSOFTOS_CLUSTER_LOCK:-/opt/tronsoftos/state/cluster-lock.json}
+      TRONSOFTOS_INTERNAL_TOKEN: ${TRONSOFTOS_INTERNAL_TOKEN:-}
+      TRONFIRE_FIREBIRD_PORT: ${TRONFIRE_FIREBIRD_PORT:-3050}
+      TRONFIRE_LAN_HOST: ${TRONFIRE_LAN_HOST:-}
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8081}
+      GOOGLE_DRIVE_CLIENT_ID: ${GOOGLE_DRIVE_CLIENT_ID:-}
+      GOOGLE_DRIVE_CLIENT_SECRET: ${GOOGLE_DRIVE_CLIENT_SECRET:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${STORAGE_ROOT}/firebird:/firebird
+      - ${TRONSOFTOS_STATE_DIR:-/opt/tronsoftos/state}:/opt/tronsoftos/state
+      - ${STORAGE_ROOT}/config-backups:/config-backups
+      - ${STORAGE_ROOT}/update-backups:/update-backups
+
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    container_name: tronfire_worker
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - redis
+      - firebird
+    environment:
+      NODE_ENV: production
+      STORAGE_ROOT: ${STORAGE_ROOT}
+      DATABASE_URL: postgresql://tronfire:${POSTGRES_PASSWORD}@postgres:5432/tronfire
+      REDIS_URL: redis://redis:6379
+      FIREBIRD_CONTAINER: tronfire_firebird25
+      FIREBIRD_EXEC_MODE: ${FIREBIRD_EXEC_MODE:-container}
+      FIREBIRD_BIN: /usr/local/firebird/bin
+      FIREBIRD_PASSWORD: ${FIREBIRD_PASSWORD}
+      TRONFIRE_DEPLOYMENT_MODE: ${TRONFIRE_DEPLOYMENT_MODE:-simple}
+      TRONFIRE_NODE_ROLE: ${TRONFIRE_NODE_ROLE:-primary}
+      TRONSOFTOS_NODE_NAME: ${TRONSOFTOS_NODE_NAME:-}
+      GOOGLE_DRIVE_CLIENT_ID: ${GOOGLE_DRIVE_CLIENT_ID:-}
+      GOOGLE_DRIVE_CLIENT_SECRET: ${GOOGLE_DRIVE_CLIENT_SECRET:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${STORAGE_ROOT}/firebird:/firebird
+      - ${TRONSOFTOS_STATE_DIR:-/opt/tronsoftos/state}:/opt/tronsoftos/state
+      - ${STORAGE_ROOT}/config-backups:/config-backups
+      - ${STORAGE_ROOT}/update-backups:/update-backups
+
+networks:
+  default:
+    name: tronfire_net

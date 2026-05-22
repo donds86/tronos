@@ -1,0 +1,164 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  TECNICO
+  CONSULTA
+}
+
+enum DatabaseType {
+  PRODUCAO
+  LEGADO_CONSULTA
+  HOMOLOGACAO
+  TEMPLATE
+  RESTAURADO_TEMPORARIO
+  ARQUIVADO
+}
+
+enum AccessMode {
+  READ_WRITE
+  READ_ONLY
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+  CANCELED
+}
+
+model User {
+  id           String    @id @default(cuid())
+  name         String
+  email        String    @unique
+  passwordHash String
+  role         UserRole  @default(TECNICO)
+  active       Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  sessions     Session[]
+  auditLogs    AuditLog[]
+}
+
+model Session {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  ipAddress String?
+  userAgent String?
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model ManagedDatabase {
+  id                      String       @id @default(cuid())
+  name                    String
+  alias                   String       @unique
+  filePath                String       @unique
+  standbyPath             String?
+  standbyStatus           String       @default("DISABLED")
+  standbyRequiredForPromotion Boolean  @default(true)
+  lastStandbyBackupAt     DateTime?
+  lastStandbyValidatedAt  DateTime?
+  lastStandbyBackupSha256 String?
+  type                    DatabaseType @default(HOMOLOGACAO)
+  accessMode              AccessMode   @default(READ_WRITE)
+  isPrimary               Boolean      @default(false)
+  backupEnabled           Boolean      @default(false)
+  backupFrequencyMinutes  Int          @default(60)
+  retentionDays           Int          @default(7)
+  status                  String       @default("UNKNOWN")
+  lastCheckAt             DateTime?
+  lastBackupAt            DateTime?
+  version                 Int?
+  createdAt               DateTime     @default(now())
+  updatedAt               DateTime     @updatedAt
+  backups                 BackupJob[]
+}
+
+model BackupJob {
+  id          String          @id @default(cuid())
+  databaseId  String
+  status      JobStatus       @default(PENDING)
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  backupPath  String?
+  manifestPath String?
+  sourceNode  String?
+  targetAlias String?
+  backupSize  BigInt?
+  sha256      String?
+  errorMessage String?
+  logPath     String?
+  driveStatus String          @default("DISABLED")
+  driveFileId String?
+  driveFileName String?
+  driveWebLink String?
+  driveUploadedAt DateTime?
+  driveErrorMessage String?
+  createdAt   DateTime        @default(now())
+  database    ManagedDatabase @relation(fields: [databaseId], references: [id], onDelete: Cascade)
+}
+
+model MetricSnapshot {
+  id               String   @id @default(cuid())
+  scope            String
+  target           String
+  databaseId       String?
+  cpuPercent       Float?
+  memoryUsageBytes BigInt?
+  memoryLimitBytes BigInt?
+  memoryPercent    Float?
+  netInputBytes    BigInt?
+  netOutputBytes   BigInt?
+  blockInputBytes  BigInt?
+  blockOutputBytes BigInt?
+  diskTotalBytes   BigInt?
+  diskUsedBytes    BigInt?
+  diskFreeBytes    BigInt?
+  diskUsedPercent  Float?
+  fileSizeBytes    BigInt?
+  uptimeSeconds    BigInt?
+  createdAt        DateTime @default(now())
+
+  @@index([scope, target, createdAt])
+  @@index([databaseId, createdAt])
+}
+
+model Alert {
+  id        String   @id @default(cuid())
+  type      String
+  severity  String
+  message   String
+  resolved  Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  action     String
+  entityType String?
+  entityId   String?
+  ipAddress  String?
+  userAgent  String?
+  details    Json?
+  createdAt  DateTime @default(now())
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+}
+
+model SystemSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}

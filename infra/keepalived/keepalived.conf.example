@@ -1,0 +1,29 @@
+vrrp_script chk_tronsoftos {
+    script "/etc/keepalived/check-tronsoftos.sh"
+    interval 2
+    timeout 2
+    fall 3
+    rise 2
+    weight -50
+}
+
+vrrp_instance TRONSOFTOS_VIP {
+    state MASTER
+    interface eth0
+    virtual_router_id 51
+    priority 150
+    advert_int 1
+
+    authentication {
+        auth_type PASS
+        auth_pass change-me
+    }
+
+    virtual_ipaddress {
+        192.168.10.50/24
+    }
+
+    track_script {
+        chk_tronsoftos
+    }
+}

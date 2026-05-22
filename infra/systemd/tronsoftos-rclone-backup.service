@@ -1,0 +1,11 @@
+[Unit]
+Description=TronSoftOS rclone cloud backup upload
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/tronsoftos/tronsoftos.env
+ExecStart=/opt/tronsoftos/scripts/rclone-upload-backups.sh
+User=root
+Group=root

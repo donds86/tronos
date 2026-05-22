@@ -1,0 +1,32 @@
+{
+  "apps": [
+    {
+      "name": "tronfire",
+      "type": "compose",
+      "enabled": true,
+      "composeFile": "apps/tronfire/docker-compose.yml",
+      "projectName": "tronfire",
+      "healthUrl": "http://127.0.0.1:8081/health",
+      "containers": [
+        "tronfire_backend",
+        "tronfire_worker",
+        "tronfire_postgres",
+        "tronfire_redis",
+        "tronfire_firebird25"
+      ],
+      "haAware": true
+    },
+    {
+      "name": "troncomanda",
+      "type": "compose",
+      "enabled": false,
+      "composeFile": "apps/troncomanda/docker-compose.yml",
+      "projectName": "troncomanda",
+      "healthUrl": "http://127.0.0.1:8091/health",
+      "containers": [
+        "troncomanda"
+      ],
+      "haAware": false
+    }
+  ]
+}

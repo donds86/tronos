@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TronFire</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@1.0.0-beta20/dist/css/tabler.min.css">
+  <style>
+    .hidden { display: none !important; }
+    body { background: #f4f6f9; }
+    body.theme-dark { background: #101725; color: #d6deeb; }
+    .status-dot { width:10px; height:10px; border-radius:50%; display:inline-block; margin-right:6px; }
+    .metric-value { font-size: 1.55rem; font-weight: 700; line-height: 1.1; }
+    .metric-panel .card-body { min-height: 190px; }
+    .alert-list { max-height: 210px; overflow: auto; }
+    .db-size { min-width: 110px; }
+    .page-body { padding-top: 1rem; }
+    .navbar-vertical { box-shadow: 0 1px 3px rgba(15, 23, 42, .08); }
+    .app-shell-header .container-xl { gap: .75rem; min-height: 56px; }
+    .dashboard-toolbar { align-items: flex-start; display: flex; gap: 1rem; justify-content: space-between; margin-bottom: 1rem; }
+    .dashboard-toolbar h2 { margin: 0; }
+    .dashboard-toolbar .text-muted { margin-top: .2rem; }
+    .range-tabs { background: #fff; border: 1px solid #dce3ea; border-radius: 6px; display: inline-flex; flex-wrap: nowrap; gap: .25rem; padding: .25rem; white-space: nowrap; }
+    .range-tabs .btn { border-radius: 4px; min-width: 48px; }
+    .summary-card { border: 1px solid #dce3ea; box-shadow: none; height: 100%; }
+    .summary-card .card-body { min-height: 98px; }
+    .zbx-board { background: transparent; color: #182433; }
+    .zbx-board .card-header,
+    .zbx-board .card-body { background: #fff; color: #182433; }
+    .zbx-panel { background: #fff; border: 1px solid #dce3ea; border-radius: 6px; box-shadow: none; color: #182433; height: 100%; }
+    .zbx-panel .card-body { background: #fff; min-height: 206px; }
+    .zbx-title { color: #182433; font-size: .76rem; font-weight: 700; letter-spacing: 0; margin-bottom: .45rem; min-height: 1.6rem; }
+    .zbx-value { color: #111827; font-size: 1.18rem; font-weight: 700; line-height: 1.15; }
+    .zbx-subtitle { color: #667085; font-size: .75rem; min-height: 1rem; }
+    .zbx-chart { width: 100%; height: 188px; display: block; background: #fbfcfe; border: 1px solid #d8e0ea; border-radius: 4px; }
+    .zbx-chart .grid { stroke: #e6ebf1; stroke-width: 1; }
+    .zbx-chart .axis-text { fill: #667085; font-size: 10px; }
+    .zbx-chart .area { fill: rgba(47, 128, 237, .16); }
+    .zbx-chart .line { fill: none; stroke: #2f80ed; stroke-width: 2; }
+    .zbx-chart .warn-line { stroke: #d89b0d; stroke-dasharray: 3 3; stroke-width: 1; }
+    .zbx-chart .crit-line { stroke: #d63939; stroke-dasharray: 3 3; stroke-width: 1; }
+    .zbx-gauge { width: 100%; height: 138px; display: block; }
+    .zbx-gauge .track { fill: none; stroke: #e3e8ef; stroke-width: 16; stroke-linecap: round; }
+    .zbx-gauge .ok { fill: none; stroke: #2fb344; stroke-width: 16; stroke-linecap: round; }
+    .zbx-gauge .warn { fill: none; stroke: #ff9f1c; stroke-width: 16; stroke-linecap: round; }
+    .zbx-gauge .crit { fill: none; stroke: #d63939; stroke-width: 16; stroke-linecap: round; }
+    .zbx-gauge .needle { stroke: #fd7e14; stroke-width: 6; stroke-linecap: round; }
+    .zbx-gauge .center { fill: #fd7e14; }
+    .zbx-gauge text { fill: #667085; font-size: 11px; }
+    .zbx-gauge .gauge-number { fill: #182433; font-size: 18px; font-weight: 700; }
+    .severity-tile { min-height: 58px; color: #161616; font-weight: 700; padding: .6rem .8rem; display: flex; align-items: center; justify-content: space-between; }
+    .severity-disaster { background: #f8d7da; color: #842029; }
+    .severity-high { background: #ffe5d0; color: #8a3b00; }
+    .severity-average { background: #fff1c2; color: #6f4d00; }
+    .severity-warning { background: #fff6d5; color: #705200; }
+    .severity-info { background: #d7ecff; color: #0a4b78; }
+    .severity-ok { background: #dcf5e7; color: #126333; }
+    .alert-shortcut { min-height: 100%; }
+    .alert-shortcut-icon { align-items: center; background: #fff1c2; border: 1px solid #f0c35a; border-radius: 50%; color: #8a5a00; display: inline-flex; font-size: 1.5rem; font-weight: 800; height: 48px; justify-content: center; line-height: 1; width: 48px; }
+    .alert-shortcut-count { font-size: 2rem; font-weight: 800; line-height: 1; }
+    .log-preview { background: #111827; border-radius: 6px; color: #e5e7eb; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: .78rem; max-height: 360px; overflow: auto; padding: .75rem; white-space: pre-wrap; word-break: break-word; }
+    .service-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; margin-right: .4rem; }
+    .app-dialog-backdrop { align-items: center; background: rgba(15, 23, 42, .52); display: flex; inset: 0; justify-content: center; padding: 1rem; position: fixed; z-index: 2000; }
+    .app-dialog { background: #fff; border-radius: 8px; box-shadow: 0 24px 64px rgba(15, 23, 42, .28); max-width: 560px; overflow: hidden; width: min(560px, 100%); }
+    .app-dialog-body { color: #344054; white-space: pre-line; }
+    .app-dialog-danger { border: 2px solid #d63939; }
+    .app-dialog-danger .card-header { background: #d63939; color: #fff; }
+    .app-dialog-danger .card-title { color: #fff; }
+    .app-dialog-danger .card-body { background: #fff1f2; }
+    .app-dialog-danger .app-dialog-body { color: #7f1d1d; font-weight: 600; }
+    .theme-toggle { align-items: center; display: inline-flex; height: 36px; justify-content: center; padding: 0; width: 40px; }
+    .theme-toggle svg { height: 18px; width: 18px; }
+    .theme-toggle .theme-icon-sun { display: none; }
+    body.theme-dark .theme-toggle .theme-icon-moon { display: none; }
+    body.theme-dark .theme-toggle .theme-icon-sun { display: block; }
+    body.theme-dark .page-wrapper,
+    body.theme-dark .page-body,
+    body.theme-dark .app-shell-header { background: #101725; color: #d6deeb; }
+    body.theme-dark .card,
+    body.theme-dark .zbx-panel,
+    body.theme-dark .zbx-board .card-header,
+    body.theme-dark .zbx-board .card-body,
+    body.theme-dark .zbx-panel .card-body,
+    body.theme-dark .summary-card { background: #151f2e; border-color: #26364d; color: #d6deeb; }
+    body.theme-dark .card-header,
+    body.theme-dark .card-body,
+    body.theme-dark .card-footer,
+    body.theme-dark .table,
+    body.theme-dark .table td,
+    body.theme-dark .table th { background: transparent; border-color: #26364d; color: #d6deeb; }
+    body.theme-dark .text-muted,
+    body.theme-dark .subheader,
+    body.theme-dark .zbx-subtitle,
+    body.theme-dark .zbx-title,
+    body.theme-dark .zbx-value { color: #9fb0c8 !important; }
+    body.theme-dark .zbx-value,
+    body.theme-dark .h1,
+    body.theme-dark .h2,
+    body.theme-dark .page-title,
+    body.theme-dark .card-title { color: #f4f7fb !important; }
+    body.theme-dark .form-control,
+    body.theme-dark .form-select,
+    body.theme-dark .input-group-text { background: #101725; border-color: #31435f; color: #e8eef8; }
+    body.theme-dark .form-control::placeholder { color: #7f8fa8; }
+    body.theme-dark .range-tabs,
+    body.theme-dark .bg-light { background: #101725 !important; border-color: #31435f !important; color: #d6deeb; }
+    body.theme-dark .zbx-chart { background: #101725; border-color: #31435f; }
+    body.theme-dark .zbx-chart .grid { stroke: #26364d; }
+    body.theme-dark .zbx-chart .axis-text,
+    body.theme-dark .zbx-gauge text { fill: #9fb0c8; }
+    body.theme-dark .app-dialog { background: #151f2e; color: #d6deeb; }
+    body.theme-dark .app-dialog-body { color: #d6deeb; }
+    @media (max-width: 991.98px) {
+      .navbar-vertical { position: static; width: 100%; }
+      .navbar-vertical .container-fluid { align-items: flex-start; flex-direction: column; padding-bottom: .75rem; }
+      .navbar-vertical .navbar-nav { flex-direction: row; flex-wrap: wrap; gap: .25rem .75rem; padding-top: .5rem !important; }
+      .page-wrapper { margin-left: 0 !important; }
+      .app-shell-header .container-xl { flex-wrap: wrap; }
+    }
+    @media (max-width: 767.98px) {
+      .page-body { padding-top: .75rem; }
+      .dashboard-toolbar { align-items: stretch; flex-direction: column; }
+      .range-tabs { align-self: stretch; justify-content: space-between; overflow-x: auto; }
+      .range-tabs .btn { flex: 1 0 auto; }
+      .metric-panel .card-body,
+      .zbx-panel .card-body { min-height: auto; }
+      .zbx-chart { height: 170px; }
+      .zbx-gauge { height: 128px; }
+      .table-responsive { border-radius: 6px; }
+      .input-group { flex-wrap: nowrap; }
+      .input-group .form-control { min-width: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div id="loginPage" class="page page-center">
+    <div class="container container-tight py-4">
+      <div class="text-center mb-4"><h1>TronFire</h1><p class="text-muted">Acesso restrito a técnicos autorizados</p></div>
+      <div class="card card-md"><div class="card-body">
+        <h2 class="h2 text-center mb-4">Entrar</h2>
+        <div class="mb-3"><label class="form-label">Usuario</label><input id="loginEmail" class="form-control" autocomplete="username"></div>
+        <div class="mb-3"><label class="form-label">Senha</label><input id="loginPassword" type="password" class="form-control" autocomplete="current-password"></div>
+        <button id="btnLogin" class="btn btn-primary w-100">Entrar</button>
+        <div id="loginError" class="text-danger mt-3"></div>
+      </div></div>
+    </div>
+  </div>
+
+  <div id="appPage" class="page hidden">
+    <aside class="navbar navbar-vertical navbar-expand-lg" data-bs-theme="dark">
+      <div class="container-fluid">
+        <h1 class="navbar-brand navbar-brand-autodark">TronFire</h1>
+        <div class="collapse navbar-collapse show">
+          <ul class="navbar-nav pt-lg-3">
+            <li class="nav-item"><a class="nav-link" href="#dashboard">Dashboard</a></li>
+            <li class="nav-item"><a class="nav-link" href="#databases">Bancos</a></li>
+            <li class="nav-item"><a class="nav-link" href="#uploads">Migracao GBK / FBK</a></li>
+            <li class="nav-item"><a class="nav-link" href="#backups">Backups</a></li>
+            <li class="nav-item"><a class="nav-link" href="#alerts">Alertas</a></li>
+            <li class="nav-item"><a class="nav-link" href="#logs">Logs</a></li>
+            <li class="nav-item"><a class="nav-link" href="#settings">Configuracoes</a></li>
+            <li class="nav-item"><a class="nav-link" href="#preflight">Diagnóstico</a></li>
+          </ul>
+        </div>
+      </div>
+    </aside>
+    <div class="page-wrapper">
+      <header class="navbar navbar-expand-md d-print-none app-shell-header"><div class="container-xl"><div class="navbar-nav flex-row order-md-last align-items-center gap-2"><button id="btnThemeToggle" class="btn btn-outline-secondary theme-toggle" type="button" title="Alternar tema" aria-label="Alternar tema">
+        <svg class="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.5 6.5 0 0 0 21 12.8Z"/></svg>
+        <svg class="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      </button><button id="btnLogout" class="btn btn-outline-danger">Sair</button></div><div><strong id="userName"></strong></div></div></header>
+      <div class="page-body"><div class="container-xl" id="content"></div></div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@tabler/core@1.0.0-beta20/dist/js/tabler.min.js"></script>
+  <script type="module" src="/app.js?v=20260521a"></script>
+</body>
+</html>
