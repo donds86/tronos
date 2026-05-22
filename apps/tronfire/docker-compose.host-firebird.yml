@@ -1,12 +1,10 @@
 services:
-  firebird:
-    profiles:
-      - container-firebird-disabled
-
   backend:
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
     environment:
       FIREBIRD_EXEC_MODE: host
       FIREBIRD_BIN: /usr/local/firebird/bin
@@ -16,8 +14,10 @@ services:
 
   worker:
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
     environment:
       FIREBIRD_EXEC_MODE: host
       FIREBIRD_BIN: /usr/local/firebird/bin

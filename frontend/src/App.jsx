@@ -377,13 +377,27 @@ function EventsView() {
 
 function SettingsView() {
   return (
-    <Card title="Ajustes" icon={Settings}>
-      <div className="grid gap-4 md:grid-cols-3">
-        <Stat label="Firebird" value="2.5.9" detail="host ou container" icon={Database} />
-        <Stat label="Rclone" value="Host" detail="Debian/systemd" icon={HardDrive} />
-        <Stat label="Containers" value="Catalogo" detail="managed-apps.json" icon={Boxes} />
-      </div>
-    </Card>
+    <div className="space-y-5">
+      <Card title="Ajustes" icon={Settings}>
+        <div className="grid gap-4 md:grid-cols-3">
+          <Stat label="Firebird" value="2.5.9" detail="host ou container" icon={Database} />
+          <Stat label="Rclone" value="Host" detail="Debian/systemd" icon={HardDrive} />
+          <Stat label="Containers" value="Catalogo" detail="managed-apps.json" icon={Boxes} />
+        </div>
+      </Card>
+      <Card title="Pareamento HA" icon={ShieldCheck}>
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <div className="text-sm font-semibold text-slate-900">Arquivo do no principal</div>
+            <div className="mt-1 text-sm text-slate-500">Use este arquivo no wizard do servidor standby para compartilhar os segredos do cluster.</div>
+          </div>
+          <a href="/api/cluster/pairing-file" className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm font-medium hover:bg-slate-50">
+            <UploadCloud className="h-4 w-4" />
+            Exportar arquivo
+          </a>
+        </div>
+      </Card>
+    </div>
   );
 }
 

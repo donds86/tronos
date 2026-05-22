@@ -13,6 +13,7 @@ const configPath = process.env.MANAGED_APPS_CONFIG || path.join(appRoot, 'config
 const fallbackConfigPath = path.join(appRoot, 'config/managed-apps.example.json');
 const stateDir = process.env.TRONSOFTOS_STATE_DIR || path.join(appRoot, 'state');
 const clusterLockPath = process.env.TRONSOFTOS_CLUSTER_LOCK || path.join(stateDir, 'cluster-lock.json');
+const clusterSecretsPath = process.env.TRONSOFTOS_CLUSTER_SECRETS || path.join(stateDir, 'cluster-secrets.env');
 const eventLogPath = process.env.TRONSOFTOS_EVENT_LOG || path.join(stateDir, 'events.jsonl');
 const frontendDist = process.env.TRONSOFTOS_FRONTEND_DIST || path.join(appRoot, 'frontend/dist');
 
@@ -204,6 +205,18 @@ function cloudflareStatus() {
   };
 }
 
+function exportPairingFile(reply) {
+  if (!fs.existsSync(clusterSecretsPath)) {
+    return json(reply, 404, { error: 'cluster-secrets.env not found' });
+  }
+  reply.writeHead(200, {
+    'content-type': 'application/octet-stream',
+    'content-disposition': 'attachment; filename="cluster-secrets.env"',
+    'cache-control': 'no-store'
+  });
+  fs.createReadStream(clusterSecretsPath).pipe(reply);
+}
+
 async function dashboard() {
   const [apps] = await Promise.all([appsStatus()]);
   const cluster = clusterStatus();
@@ -284,6 +297,7 @@ async function handleApi(req, reply, url) {
   if (req.method === 'GET' && url.pathname === '/api/backups') return json(reply, 200, backupStatus());
   if (req.method === 'GET' && url.pathname === '/api/cloudflare') return json(reply, 200, cloudflareStatus());
   if (req.method === 'GET' && url.pathname === '/api/events') return json(reply, 200, { events: readEvents(Number(url.searchParams.get('limit') || 100)) });
+  if (req.method === 'GET' && url.pathname === '/api/cluster/pairing-file') return exportPairingFile(reply);
   const actionMatch = url.pathname.match(/^\/api\/apps\/([^/]+)\/(up|stop|restart|pull)$/);
   if (req.method === 'POST' && actionMatch) {
     await readBody(req).catch(() => ({}));
