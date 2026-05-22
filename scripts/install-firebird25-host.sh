@@ -25,7 +25,8 @@ if ! gzip -t "$PACKAGE" >/dev/null 2>&1; then
 fi
 
 apt-get update
-apt-get install -y ca-certificates libstdc++6 libncurses5 libtommath1 procps net-tools bash xz-utils findutils
+apt-get install -y ca-certificates libstdc++6 libtommath1 procps net-tools bash xz-utils findutils
+apt-get install -y libncurses5 || apt-get install -y libncurses6 libtinfo6
 touch /etc/services /etc/inetd.conf
 
 tmp_dir="$(mktemp -d)"
