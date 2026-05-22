@@ -6,6 +6,7 @@ ENV_DIR="/etc/tronsoftos"
 TRONSOFTOS_ENV="$ENV_DIR/tronsoftos.env"
 TRONFIRE_ENV="$APP_DIR/apps/tronfire/.env"
 MANAGED_APPS="$APP_DIR/config/managed-apps.json"
+CLUSTER_SECRETS="$APP_DIR/state/cluster-secrets.env"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "Execute como root: sudo scripts/configure-wizard.sh" >&2
@@ -74,6 +75,22 @@ if [ "$DEPLOYMENT_MODE" = "ha" ]; then
   NODE_ROLE="$(ask "Papel deste no (primary/standby/recovery)" "primary")"
 fi
 
+SESSION_SECRET=""
+INTERNAL_TOKEN=""
+if [ "$DEPLOYMENT_MODE" = "ha" ] && [ "$NODE_ROLE" != "primary" ]; then
+  if yes_no "Voce tem o arquivo de pareamento do no principal? (s/n)" "s"; then
+    PAIRING_FILE="$(ask "Caminho do arquivo cluster-secrets.env" "$CLUSTER_SECRETS")"
+    if [ -f "$PAIRING_FILE" ]; then
+      # shellcheck disable=SC1090
+      . "$PAIRING_FILE"
+      SESSION_SECRET="${SESSION_SECRET:-}"
+      INTERNAL_TOKEN="${TRONSOFTOS_INTERNAL_TOKEN:-${INTERNAL_TOKEN:-}}"
+    else
+      echo "Arquivo de pareamento nao encontrado. Segredos serao gerados neste no."
+    fi
+  fi
+fi
+
 SERVER_IP="$(ask "IP deste servidor na rede do cliente" "127.0.0.1")"
 FIREBIRD_MODE="host"
 echo "Firebird 2.5.9 sera instalado/usado no host Debian."
@@ -85,8 +102,8 @@ echo "Porta Firebird padrao: $FIREBIRD_PORT"
 
 FIREBIRD_PASSWORD="masterkey"
 POSTGRES_PASSWORD="su61613225Ts"
-SESSION_SECRET="$(ask_secret "Chave de sessao do TronFire")"
-INTERNAL_TOKEN="$(ask_secret "Token interno TronSoftOS -> TronFire")"
+SESSION_SECRET="${SESSION_SECRET:-$(openssl rand -base64 48 | tr -d '\n')}"
+INTERNAL_TOKEN="${INTERNAL_TOKEN:-$(openssl rand -base64 48 | tr -d '\n')}"
 
 RCLONE_REMOTE=""
 RCLONE_PATH="tronsoftos/backups"
@@ -194,6 +211,13 @@ GOOGLE_DRIVE_CLIENT_ID=
 GOOGLE_DRIVE_CLIENT_SECRET=
 EOF
 
+cat > "$CLUSTER_SECRETS" <<EOF
+SESSION_SECRET=$SESSION_SECRET
+TRONSOFTOS_INTERNAL_TOKEN=$INTERNAL_TOKEN
+POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+FIREBIRD_PASSWORD=$FIREBIRD_PASSWORD
+EOF
+
 if [ "$FIREBIRD_MODE" = "host" ]; then
   cat > "$MANAGED_APPS" <<EOF
 {
@@ -268,13 +292,14 @@ else
 EOF
 fi
 
-chmod 600 "$TRONSOFTOS_ENV" "$TRONFIRE_ENV"
+chmod 600 "$TRONSOFTOS_ENV" "$TRONFIRE_ENV" "$CLUSTER_SECRETS"
 
 line
 echo "Configuracao gravada com sucesso:"
 echo "- $TRONSOFTOS_ENV"
 echo "- $TRONFIRE_ENV"
 echo "- $MANAGED_APPS"
+echo "- $CLUSTER_SECRETS"
 line
 echo "Proximos comandos sugeridos:"
 if [ "$FIREBIRD_MODE" = "host" ]; then

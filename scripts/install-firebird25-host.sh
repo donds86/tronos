@@ -29,6 +29,29 @@ apt-get install -y ca-certificates libstdc++6 libtommath1 procps net-tools bash 
 apt-get install -y libncurses5 || apt-get install -y libncurses6 libtinfo6
 touch /etc/services /etc/inetd.conf
 
+ensure_legacy_ncurses() {
+  local lib_dir
+  for lib_dir in /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu /lib /usr/lib; do
+    if [ -e "$lib_dir/libncurses.so.5" ]; then
+      return 0
+    fi
+  done
+  for lib_dir in /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu /lib /usr/lib; do
+    if [ -e "$lib_dir/libncurses.so.6" ]; then
+      ln -sf "$lib_dir/libncurses.so.6" "$lib_dir/libncurses.so.5"
+      if [ -e "$lib_dir/libtinfo.so.6" ] && [ ! -e "$lib_dir/libtinfo.so.5" ]; then
+        ln -sf "$lib_dir/libtinfo.so.6" "$lib_dir/libtinfo.so.5"
+      fi
+      ldconfig
+      return 0
+    fi
+  done
+  echo "Nao foi possivel localizar libncurses.so.6 para criar compatibilidade libncurses.so.5" >&2
+  return 1
+}
+
+ensure_legacy_ncurses
+
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
