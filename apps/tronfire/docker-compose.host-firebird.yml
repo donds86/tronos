@@ -1,4 +1,8 @@
 services:
+  firebird:
+    profiles:
+      - container-firebird-disabled
+
   backend:
     depends_on:
       postgres:

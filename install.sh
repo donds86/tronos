@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="${TRONSOFTOS_APP_DIR:-/opt/tronsoftos}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_DIR="${TRONSOFTOS_APP_DIR:-$SCRIPT_DIR}"
 ENV_DIR="/etc/tronsoftos"
 ENV_FILE="${ENV_DIR}/tronsoftos.env"
 USER_NAME="${TRONSOFTOS_USER:-tronsoftos}"
