@@ -104,6 +104,12 @@ cp "$APP_DIR/infra/systemd/tronsoftos-rclone-backup.timer" /etc/systemd/system/t
 chown -R "$USER_NAME:$GROUP_NAME" "$APP_DIR" /opt/tronfire-storage
 chmod +x "$APP_DIR/scripts/"*.sh "$APP_DIR/infra/keepalived/check-tronsoftos.sh"
 
+echo "Subindo TronFire e aplicando migrations..."
+cd "$APP_DIR/apps/tronfire"
+docker compose up -d --build
+docker compose exec -T backend npx prisma migrate deploy
+docker compose exec -T backend node prisma/seed.js
+
 systemctl daemon-reload
 systemctl enable --now tronsoftos.service
 systemctl enable --now tronsoftos-rclone-backup.timer
