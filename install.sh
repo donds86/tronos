@@ -13,6 +13,9 @@ install_docker() {
     return
   fi
 
+  echo "Removendo pacotes Docker conflitantes, se existirem..."
+  apt-get remove -y docker.io docker-doc docker-compose podman-docker containerd runc docker-buildx docker-buildx-plugin 2>/dev/null || true
+
   if ! apt-cache show docker-compose-plugin >/dev/null 2>&1; then
     echo "Configurando repositorio oficial da Docker..."
     apt-get install -y ca-certificates curl gnupg
@@ -26,10 +29,17 @@ install_docker() {
   fi
 
   if apt-cache show docker-ce >/dev/null 2>&1; then
-    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    if ! apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin; then
+      apt-get -f install -y
+      apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+    fi
+    apt-get install -y docker-buildx-plugin || echo "Aviso: docker-buildx-plugin nao foi instalado; seguindo com docker compose."
   else
     apt-get install -y docker.io docker-compose-plugin
   fi
+
+  docker version >/dev/null
+  docker compose version >/dev/null
 }
 
 if [ "$(id -u)" -ne 0 ]; then
