@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="${TRONSOFTOS_APP_DIR:-/opt/tronsoftos}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+APP_DIR="${TRONSOFTOS_APP_DIR:-$DEFAULT_APP_DIR}"
 ENV_DIR="/etc/tronsoftos"
 TRONSOFTOS_ENV="$ENV_DIR/tronsoftos.env"
 TRONFIRE_ENV="$APP_DIR/apps/tronfire/.env"
@@ -50,6 +52,110 @@ yes_no() {
   esac
 }
 
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+detect_default_iface() {
+  ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}'
+}
+
+detect_default_ipv4_cidr() {
+  local iface="$1"
+  if [ -n "$iface" ]; then
+    ip -o -4 addr show dev "$iface" scope global 2>/dev/null | awk '{print $4; exit}'
+  fi
+}
+
+detect_default_gateway() {
+  ip route show default 2>/dev/null | awk '{print $3; exit}'
+}
+
+detect_dns_servers() {
+  awk '/^nameserver / {print $2}' /etc/resolv.conf 2>/dev/null | paste -sd' ' -
+}
+
+ipv4_without_cidr() {
+  echo "${1%%/*}"
+}
+
+same_ipv4_prefix_hint() {
+  local cidr="$1"
+  local ip="${cidr%%/*}"
+  local prefix="${cidr#*/}"
+  if [ "$ip" != "$cidr" ] && [ "$prefix" = "24" ]; then
+    echo "${ip%.*}.X/$prefix"
+  else
+    echo "mesma sub-rede/VLAN do IP fixo dos servidores"
+  fi
+}
+
+configure_static_ip() {
+  local iface="$1"
+  local address_cidr="$2"
+  local gateway="$3"
+  local dns="$4"
+  local apply_now="$5"
+
+  if command_exists nmcli; then
+    local connection
+    connection="$(nmcli -t -f NAME,DEVICE connection show --active | awk -F: -v dev="$iface" '$2==dev {print $1; exit}')"
+    if [ -z "$connection" ]; then
+      connection="$(nmcli -t -f NAME connection show | head -n1)"
+    fi
+    if [ -z "$connection" ]; then
+      echo "Nao foi possivel localizar uma conexao do NetworkManager para $iface."
+      return 1
+    fi
+
+    nmcli connection modify "$connection" \
+      ipv4.addresses "$address_cidr" \
+      ipv4.gateway "$gateway" \
+      ipv4.dns "$dns" \
+      ipv4.method manual \
+      connection.autoconnect yes
+
+    echo "IP fixo gravado no NetworkManager: conexao '$connection'."
+    if [ "$apply_now" = "true" ]; then
+      echo "Aplicando conexao agora. Se estiver via SSH, a sessao pode cair se o IP mudar."
+      nmcli connection up "$connection"
+    else
+      echo "A configuracao sera aplicada ao reconectar a interface ou reiniciar o servidor."
+    fi
+    return 0
+  fi
+
+  if systemctl list-unit-files systemd-networkd.service >/dev/null 2>&1; then
+    local network_file="/etc/systemd/network/10-tronsoftos-$iface.network"
+    {
+      echo "[Match]"
+      echo "Name=$iface"
+      echo
+      echo "[Network]"
+      echo "DHCP=no"
+      echo "Address=$address_cidr"
+      echo "Gateway=$gateway"
+      for dns_server in $dns; do
+        echo "DNS=$dns_server"
+      done
+    } > "$network_file"
+
+    systemctl enable systemd-networkd.service >/dev/null 2>&1 || true
+    echo "IP fixo gravado em $network_file."
+    if [ "$apply_now" = "true" ]; then
+      echo "Reiniciando systemd-networkd agora. Se estiver via SSH, a sessao pode cair se o IP mudar."
+      systemctl restart systemd-networkd.service
+    else
+      echo "A configuracao sera aplicada ao reiniciar o systemd-networkd ou o servidor."
+    fi
+    return 0
+  fi
+
+  echo "Nao encontrei NetworkManager nem systemd-networkd para aplicar IP fixo automaticamente."
+  echo "Configure manualmente a interface $iface com $address_cidr antes de seguir em producao."
+  return 1
+}
+
 line() {
   printf '%*s\n' 72 '' | tr ' ' '-'
 }
@@ -91,7 +197,41 @@ if [ "$DEPLOYMENT_MODE" = "ha" ] && [ "$NODE_ROLE" != "primary" ]; then
   fi
 fi
 
-SERVER_IP="$(ask "IP deste servidor na rede do cliente" "127.0.0.1")"
+DEFAULT_IFACE="$(detect_default_iface)"
+DEFAULT_IPV4_CIDR="$(detect_default_ipv4_cidr "$DEFAULT_IFACE")"
+DEFAULT_SERVER_IP="$(ipv4_without_cidr "${DEFAULT_IPV4_CIDR:-127.0.0.1}")"
+DEFAULT_GATEWAY="$(detect_default_gateway)"
+DEFAULT_DNS="$(detect_dns_servers)"
+
+line
+echo "Rede do servidor"
+echo "Informe o IP real deste Debian. Este IP deve existir na placa de rede do host."
+echo "Se quiser trocar ou fixar o IP agora, use a opcao abaixo."
+line
+
+SERVER_IP="$DEFAULT_SERVER_IP"
+STATIC_IP_ENABLED="false"
+STATIC_IP_INTERFACE="$DEFAULT_IFACE"
+STATIC_IP_ADDRESS_CIDR="$DEFAULT_IPV4_CIDR"
+STATIC_IP_GATEWAY="$DEFAULT_GATEWAY"
+STATIC_IP_DNS="${DEFAULT_DNS:-1.1.1.1 8.8.8.8}"
+STATIC_IP_APPLY_NOW="false"
+
+if yes_no "Configurar/fixar IP deste host agora? (s/n)" "n"; then
+  STATIC_IP_ENABLED="true"
+  STATIC_IP_INTERFACE="$(ask "Interface de rede do host" "${DEFAULT_IFACE:-eth0}")"
+  STATIC_IP_ADDRESS_CIDR="$(ask "IP fixo com mascara CIDR (ex: 192.168.1.50/24)" "${DEFAULT_IPV4_CIDR:-192.168.1.50/24}")"
+  STATIC_IP_GATEWAY="$(ask "Gateway da rede" "${DEFAULT_GATEWAY:-192.168.1.1}")"
+  STATIC_IP_DNS="$(ask "DNS separados por espaco" "$STATIC_IP_DNS")"
+  SERVER_IP="$(ipv4_without_cidr "$STATIC_IP_ADDRESS_CIDR")"
+  echo "Atencao: aplicar agora pode derrubar a conexao SSH se o IP mudar."
+  if yes_no "Aplicar IP fixo imediatamente? (s/n)" "n"; then
+    STATIC_IP_APPLY_NOW="true"
+  fi
+else
+  SERVER_IP="$(ask "IP atual deste servidor na rede do cliente" "$DEFAULT_SERVER_IP")"
+fi
+
 FIREBIRD_MODE="host"
 echo "Firebird 2.5.9 sera instalado/usado no host Debian."
 
@@ -117,8 +257,18 @@ HA_INTERFACE=""
 HA_VIP=""
 HA_PRIORITY="150"
 if [ "$DEPLOYMENT_MODE" = "ha" ]; then
-  HA_INTERFACE="$(ask "Interface de rede do VIP (ex: ens18, eth0)" "eth0")"
-  HA_VIP="$(ask "IP virtual/VIP" "$SERVER_IP")"
+  line
+  echo "VIP do HA"
+  echo "O VIP deve ser um IP livre, nao usado por nenhum servidor."
+  echo "Ele deve ficar na mesma sub-rede/VLAN dos dois nos HA: $(same_ipv4_prefix_hint "${STATIC_IP_ADDRESS_CIDR:-$SERVER_IP}")"
+  echo "Nao use o IP real do primary nem do standby como VIP."
+  line
+  HA_INTERFACE="$(ask "Interface de rede do VIP (ex: ens18, eth0)" "${STATIC_IP_INTERFACE:-eth0}")"
+  HA_VIP="$(ask "IP virtual/VIP" "")"
+  if [ -z "$HA_VIP" ] || [ "$HA_VIP" = "$SERVER_IP" ]; then
+    echo "VIP invalido: informe um IP livre diferente do IP real deste servidor." >&2
+    exit 78
+  fi
   HA_PRIORITY="$(ask "Prioridade keepalived deste no" "$([ "$NODE_ROLE" = "primary" ] && echo 150 || echo 100)")"
 fi
 
@@ -136,6 +286,12 @@ TRONSOFTOS_LOG_DIR=$APP_DIR/logs
 TRONSOFTOS_CLUSTER_LOCK=$APP_DIR/state/cluster-lock.json
 TRONSOFTOS_CLUSTER_SECRETS=$APP_DIR/state/cluster-secrets.env
 TRONSOFTOS_FRONTEND_DIST=$APP_DIR/frontend/dist
+
+HOST_STATIC_IP_ENABLED=$STATIC_IP_ENABLED
+HOST_STATIC_IP_INTERFACE=$STATIC_IP_INTERFACE
+HOST_STATIC_IP_ADDRESS_CIDR=$STATIC_IP_ADDRESS_CIDR
+HOST_STATIC_IP_GATEWAY=$STATIC_IP_GATEWAY
+HOST_STATIC_IP_DNS="$STATIC_IP_DNS"
 
 HA_INTERFACE=$HA_INTERFACE
 HA_VIP=$HA_VIP
@@ -294,6 +450,12 @@ EOF
 fi
 
 chmod 600 "$TRONSOFTOS_ENV" "$TRONFIRE_ENV" "$CLUSTER_SECRETS"
+
+if [ "$STATIC_IP_ENABLED" = "true" ]; then
+  line
+  echo "Configurando IP fixo do host..."
+  configure_static_ip "$STATIC_IP_INTERFACE" "$STATIC_IP_ADDRESS_CIDR" "$STATIC_IP_GATEWAY" "$STATIC_IP_DNS" "$STATIC_IP_APPLY_NOW" || true
+fi
 
 line
 echo "Configuracao gravada com sucesso:"

@@ -81,7 +81,7 @@ if [ ! -f "$APP_DIR/config/managed-apps.json" ]; then
 fi
 
 if [ "${TRONSOFTOS_SKIP_WIZARD:-false}" != "true" ]; then
-  bash "$APP_DIR/scripts/configure-wizard.sh"
+  TRONSOFTOS_APP_DIR="$APP_DIR" bash "$APP_DIR/scripts/configure-wizard.sh"
 fi
 
 echo "Preparando frontend..."
