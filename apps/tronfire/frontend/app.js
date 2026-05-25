@@ -380,17 +380,20 @@ async function dashboard() {
   const data = await api(`/api/dashboard?range=${range}`);
   const prod = data.databases.find(d => d.isPrimary);
   const metrics = data.metrics || { latest: [], series: [] };
-  const firebird = metricLatest(metrics, 'FIREBIRD', 'tronfire_firebird25');
+  const firebirdTarget = (metrics.latest || []).find(m => m.scope === 'FIREBIRD' && m.target === 'firebird_host')?.target
+    || (metrics.latest || []).find(m => m.scope === 'FIREBIRD')?.target
+    || 'tronfire_firebird25';
+  const firebird = metricLatest(metrics, 'FIREBIRD', firebirdTarget);
   const dataDisk = metricLatest(metrics, 'SERVER', '/firebird/data');
   const backupDisk = metricLatest(metrics, 'SERVER', '/firebird/backups');
   const uptime = metricLatest(metrics, 'SERVER', 'firebird_uptime');
   const rangeLabel = { day: '24 horas', week: '7 dias', month: '30 dias' }[range];
-  const firebirdCpu = metricSeries(metrics, 'FIREBIRD', 'tronfire_firebird25', 'cpuPercent');
-  const firebirdMem = metricSeries(metrics, 'FIREBIRD', 'tronfire_firebird25', 'memoryPercent');
+  const firebirdCpu = metricSeries(metrics, 'FIREBIRD', firebirdTarget, 'cpuPercent');
+  const firebirdMem = metricSeries(metrics, 'FIREBIRD', firebirdTarget, 'memoryPercent');
   const diskData = metricSeries(metrics, 'SERVER', '/firebird/data', 'diskUsedPercent');
   const diskBackup = metricSeries(metrics, 'SERVER', '/firebird/backups', 'diskUsedPercent');
-  const netOut = metricSeries(metrics, 'FIREBIRD', 'tronfire_firebird25', 'netOutputBytes');
-  const blockOut = metricSeries(metrics, 'FIREBIRD', 'tronfire_firebird25', 'blockOutputBytes');
+  const netOut = metricSeries(metrics, 'FIREBIRD', firebirdTarget, 'netOutputBytes');
+  const blockOut = metricSeries(metrics, 'FIREBIRD', firebirdTarget, 'blockOutputBytes');
   const dbSizeSeries = prod ? metricSeries(metrics, 'DATABASE', prod.alias, 'fileSizeBytes').map(p => ({ ...p, v: p.v / (1024 ** 3) })) : [];
   const dbMetricByAlias = new Map((metrics.latest || []).filter(m => m.scope === 'DATABASE').map(m => [m.target, m]));
   const topContainers = latestPerContainer(metrics).slice(0, 5);
@@ -425,8 +428,8 @@ async function dashboard() {
       ${zabbixGraphCard('Firebird: historico de memoria em %', `Periodo: ${rangeLabel}`, lineChart(firebirdMem, '%', { min: 0, max: 100, warn: 75, crit: 90 }))}
       ${zabbixGraphCard('/firebird/data: historico de disco em %', `Periodo: ${rangeLabel}`, lineChart(diskData, '%', { min: 0, max: 100, warn: 85, crit: 95 }))}
       ${zabbixGraphCard('/firebird/backups: historico de disco em %', `Periodo: ${rangeLabel}`, lineChart(diskBackup, '%', { min: 0, max: 100, warn: 85, crit: 95 }))}
-      ${zabbixGraphCard('Firebird: trafego de saida por coleta', 'Delta entre coletas do container', lineChart(netOut.map((p, i, arr) => i === 0 ? { ...p, v: 0 } : { ...p, v: Math.max(p.v - arr[i - 1].v, 0) }), 'B'))}
-      ${zabbixGraphCard('Firebird: escrita em disco por coleta', 'Delta de Block I/O gravado', lineChart(blockOut.map((p, i, arr) => i === 0 ? { ...p, v: 0 } : { ...p, v: Math.max(p.v - arr[i - 1].v, 0) }), 'B'))}
+      ${zabbixGraphCard('Firebird: trafego de saida por coleta', firebirdTarget === 'firebird_host' ? 'Indisponivel por processo no modo host' : 'Delta entre coletas do container', lineChart(netOut.map((p, i, arr) => i === 0 ? { ...p, v: 0 } : { ...p, v: Math.max(p.v - arr[i - 1].v, 0) }), 'B'))}
+      ${zabbixGraphCard('Firebird: escrita em disco por coleta', firebirdTarget === 'firebird_host' ? 'Delta de I/O do processo no host' : 'Delta de Block I/O gravado', lineChart(blockOut.map((p, i, arr) => i === 0 ? { ...p, v: 0 } : { ...p, v: Math.max(p.v - arr[i - 1].v, 0) }), 'B'))}
       ${zabbixGraphCard(`Banco principal: crescimento em GB`, prod?.alias ? `Alias: ${prod.alias}` : 'Sem banco principal definido', lineChart(dbSizeSeries, 'GB'), 'col-lg-8')}
       <div class="col-lg-4">
         ${dashboardAlertShortcut(data.alerts)}

@@ -13,6 +13,9 @@ const FIREBIRD_CONTAINER = process.env.FIREBIRD_CONTAINER || 'tronfire_firebird2
 const FIREBIRD_PASSWORD = process.env.FIREBIRD_PASSWORD || 'masterkey';
 const FIREBIRD_EXEC_MODE = String(process.env.FIREBIRD_EXEC_MODE || 'container').toLowerCase();
 const TRONFIRE_NODE_ROLE = String(process.env.TRONFIRE_NODE_ROLE || 'primary').toLowerCase();
+const HOST_PROC_ROOT = process.env.HOST_PROC_ROOT || '/host/proc';
+const FIREBIRD_HOST_TARGET = 'firebird_host';
+const FIREBIRD_PROCESS_NAMES = new Set(['fbguard', 'fbserver', 'fb_inet_server', 'fb_smp_server', 'firebird']);
 const METRIC_CONTAINERS = [
   'tronfire_firebird25',
   'tronfire_postgres',
@@ -88,6 +91,67 @@ function bigIntOrNull(value) {
   try { return BigInt(value); } catch { return null; }
 }
 
+function readText(filePath) {
+  return fs.readFileSync(filePath, 'utf8').trim();
+}
+
+function listHostFirebirdPids() {
+  if (!fs.existsSync(HOST_PROC_ROOT)) return [];
+  const pids = [];
+  for (const entry of fs.readdirSync(HOST_PROC_ROOT, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
+    try {
+      const comm = readText(`${HOST_PROC_ROOT}/${entry.name}/comm`);
+      if (FIREBIRD_PROCESS_NAMES.has(comm)) pids.push(entry.name);
+    } catch {
+      // Process may have exited between readdir and read.
+    }
+  }
+  return pids;
+}
+
+function readHostCpuJiffies() {
+  const firstLine = fs.readFileSync(`${HOST_PROC_ROOT}/stat`, 'utf8').split(/\r?\n/)[0] || '';
+  return firstLine.split(/\s+/).slice(1).reduce((sum, value) => sum + Number(value || 0), 0);
+}
+
+function readProcessJiffies(pid) {
+  const stat = fs.readFileSync(`${HOST_PROC_ROOT}/${pid}/stat`, 'utf8');
+  const end = stat.lastIndexOf(')');
+  const fields = stat.slice(end + 2).trim().split(/\s+/);
+  return Number(fields[11] || 0) + Number(fields[12] || 0);
+}
+
+function readProcessStartJiffies(pid) {
+  const stat = fs.readFileSync(`${HOST_PROC_ROOT}/${pid}/stat`, 'utf8');
+  const end = stat.lastIndexOf(')');
+  const fields = stat.slice(end + 2).trim().split(/\s+/);
+  return Number(fields[19] || 0);
+}
+
+function readHostMemTotalBytes() {
+  const meminfo = fs.readFileSync(`${HOST_PROC_ROOT}/meminfo`, 'utf8');
+  const match = meminfo.match(/^MemTotal:\s+(\d+)\s+kB/m);
+  return match ? BigInt(match[1]) * 1024n : null;
+}
+
+function readProcessRssBytes(pid) {
+  const status = fs.readFileSync(`${HOST_PROC_ROOT}/${pid}/status`, 'utf8');
+  const match = status.match(/^VmRSS:\s+(\d+)\s+kB/m);
+  return match ? BigInt(match[1]) * 1024n : 0n;
+}
+
+function readProcessIoBytes(pid) {
+  try {
+    const io = fs.readFileSync(`${HOST_PROC_ROOT}/${pid}/io`, 'utf8');
+    const read = io.match(/^read_bytes:\s+(\d+)/m)?.[1] || '0';
+    const write = io.match(/^write_bytes:\s+(\d+)/m)?.[1] || '0';
+    return { readBytes: BigInt(read), writeBytes: BigInt(write) };
+  } catch {
+    return { readBytes: 0n, writeBytes: 0n };
+  }
+}
+
 async function createAlertOnce(type, severity, message) {
   const existing = await prisma.alert.findFirst({ where: { type, severity, resolved: false } });
   if (!existing) {
@@ -129,6 +193,70 @@ async function collectContainerMetrics() {
     }
   } catch (err) {
     console.error('[worker] container metrics error', err.message);
+  }
+}
+
+async function collectHostFirebirdMetrics() {
+  if (FIREBIRD_EXEC_MODE !== 'host' && FIREBIRD_EXEC_MODE !== 'direct') return;
+  try {
+    const pids = listHostFirebirdPids();
+    if (!pids.length) return;
+
+    const firstProc = pids.reduce((sum, pid) => sum + readProcessJiffies(pid), 0);
+    const firstHost = readHostCpuJiffies();
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    const livePids = listHostFirebirdPids();
+    const secondProc = livePids.reduce((sum, pid) => sum + readProcessJiffies(pid), 0);
+    const secondHost = readHostCpuJiffies();
+    const cpuPercent = secondHost > firstHost ? ((secondProc - firstProc) / (secondHost - firstHost)) * 100 : null;
+
+    const memoryUsageBytes = livePids.reduce((sum, pid) => sum + readProcessRssBytes(pid), 0n);
+    const memoryLimitBytes = readHostMemTotalBytes();
+    const memoryPercent = memoryLimitBytes ? Number(memoryUsageBytes * 10000n / memoryLimitBytes) / 100 : null;
+    const io = livePids.reduce((acc, pid) => {
+      const item = readProcessIoBytes(pid);
+      acc.readBytes += item.readBytes;
+      acc.writeBytes += item.writeBytes;
+      return acc;
+    }, { readBytes: 0n, writeBytes: 0n });
+
+    await prisma.metricSnapshot.create({
+      data: {
+        scope: 'FIREBIRD',
+        target: FIREBIRD_HOST_TARGET,
+        cpuPercent,
+        memoryUsageBytes,
+        memoryLimitBytes,
+        memoryPercent,
+        blockInputBytes: io.readBytes,
+        blockOutputBytes: io.writeBytes
+      }
+    });
+
+    const oldestStart = livePids
+      .map(pid => readProcessStartJiffies(pid))
+      .filter(value => Number.isFinite(value) && value > 0)
+      .sort((a, b) => a - b)[0];
+    if (oldestStart) {
+      const uptimeSeconds = Number(readText(`${HOST_PROC_ROOT}/uptime`).split(/\s+/)[0] || 0);
+      const hertz = 100;
+      await prisma.metricSnapshot.create({
+        data: {
+          scope: 'SERVER',
+          target: 'firebird_uptime',
+          uptimeSeconds: BigInt(Math.max(Math.floor(uptimeSeconds - oldestStart / hertz), 0))
+        }
+      });
+    }
+
+    const mem = memoryPercent || 0;
+    if (mem >= 95) {
+      await createAlertOnce('FIREBIRD_MEMORY_CRITICAL', 'CRITICAL', `Firebird host com memoria critica: ${mem.toFixed(1)}%`);
+    } else if (mem >= 85) {
+      await createAlertOnce('FIREBIRD_MEMORY_WARNING', 'WARNING', `Firebird host com memoria em atencao: ${mem.toFixed(1)}%`);
+    }
+  } catch (err) {
+    console.error('[worker] host firebird metrics error', err.message);
   }
 }
 
@@ -204,6 +332,7 @@ async function cleanupOldMetrics() {
 
 async function collectMetrics() {
   await collectContainerMetrics();
+  await collectHostFirebirdMetrics();
   await collectDiskMetrics();
   await collectUptimeMetric();
   await collectDatabaseFileMetrics();

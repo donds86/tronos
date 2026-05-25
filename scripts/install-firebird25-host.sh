@@ -74,9 +74,14 @@ if [ "$FB_HOME_REAL" != "/usr/local/firebird" ]; then
 fi
 
 mkdir -p "$STORAGE_ROOT/firebird/data" "$STORAGE_ROOT/firebird/backups" "$STORAGE_ROOT/firebird/uploads" "$STORAGE_ROOT/firebird/templates" "$STORAGE_ROOT/firebird/standby" "$STORAGE_ROOT/firebird/restore-work" "$STORAGE_ROOT/firebird/quarantine" "$STORAGE_ROOT/firebird/logs" "$STORAGE_ROOT/firebird/scripts"
+chmod 0777 "$STORAGE_ROOT/firebird/data" "$STORAGE_ROOT/firebird/backups" "$STORAGE_ROOT/firebird/uploads" "$STORAGE_ROOT/firebird/templates" "$STORAGE_ROOT/firebird/standby" "$STORAGE_ROOT/firebird/restore-work" "$STORAGE_ROOT/firebird/quarantine" "$STORAGE_ROOT/firebird/logs" "$STORAGE_ROOT/firebird/scripts"
+if [ ! -e /firebird ]; then
+  ln -s "$STORAGE_ROOT/firebird" /firebird
+fi
 
 if [ -f "$TEMPLATE" ]; then
   cp "$TEMPLATE" "$STORAGE_ROOT/firebird/templates/template.fdb"
+  chmod 0666 "$STORAGE_ROOT/firebird/templates/template.fdb"
 fi
 
 ln -sf /usr/local/firebird/bin/gbak /usr/bin/gbak

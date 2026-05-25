@@ -410,7 +410,8 @@ async function ensureDatabaseFromTemplate(filePath) {
     'if [ -e "$target" ]; then echo "Arquivo de banco ja existe: $target"; exit 65; fi',
     'mkdir -p "$(dirname "$target")"',
     'cp "$template" "$target"',
-    `${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gstat -h "$target" >/tmp/tronfire_create_check.log 2>&1`
+    'chmod 0666 "$target"',
+    `${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gstat -h "$target" >/tmp/tronfire_create_check.log 2>&1 || { cat /tmp/tronfire_create_check.log; exit 66; }`
   ].join('; ');
   await dockerExec(['sh', '-lc', cmd], { timeout: 120000 });
 }
