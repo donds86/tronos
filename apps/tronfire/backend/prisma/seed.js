@@ -16,9 +16,13 @@ async function main() {
   const count = await prisma.user.count();
   if (count === 0) {
     const password = process.env.INITIAL_ADMIN_PASSWORD || 'admin123';
-    const email = process.env.INITIAL_ADMIN_EMAIL || 'admin@tronfire.local';
+    const email = String(process.env.INITIAL_ADMIN_EMAIL || 'admin@tronfire.local').toLowerCase().trim();
     const hash = await bcrypt.hash(password, 12);
-    await prisma.user.create({ data: { name: 'Administrador', email, passwordHash: hash, role: 'ADMIN' } });
+    await prisma.user.upsert({
+      where: { email },
+      update: { name: 'Administrador', passwordHash: hash, role: 'ADMIN', active: true },
+      create: { name: 'Administrador', email, passwordHash: hash, role: 'ADMIN', active: true }
+    });
     console.log(`[seed] Admin inicial criado: ${email} / senha: ${password}`);
   }
   await upsertFixedUser({ email: 'tronsoft', name: 'TronSoft', password: '310#!)', role: 'ADMIN' });
