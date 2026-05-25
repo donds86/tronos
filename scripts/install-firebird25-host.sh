@@ -72,6 +72,9 @@ if [ "$FB_HOME_REAL" != "/usr/local/firebird" ]; then
   rm -rf /usr/local/firebird
   ln -s "$FB_HOME_REAL" /usr/local/firebird
 fi
+if [ "$FB_HOME_REAL" != "/opt/firebird" ] && [ ! -e /opt/firebird ]; then
+  ln -s "$FB_HOME_REAL" /opt/firebird
+fi
 
 mkdir -p "$STORAGE_ROOT/firebird/data" "$STORAGE_ROOT/firebird/backups" "$STORAGE_ROOT/firebird/uploads" "$STORAGE_ROOT/firebird/templates" "$STORAGE_ROOT/firebird/standby" "$STORAGE_ROOT/firebird/restore-work" "$STORAGE_ROOT/firebird/quarantine" "$STORAGE_ROOT/firebird/logs" "$STORAGE_ROOT/firebird/scripts"
 chmod 0777 "$STORAGE_ROOT/firebird/data" "$STORAGE_ROOT/firebird/backups" "$STORAGE_ROOT/firebird/uploads" "$STORAGE_ROOT/firebird/templates" "$STORAGE_ROOT/firebird/standby" "$STORAGE_ROOT/firebird/restore-work" "$STORAGE_ROOT/firebird/quarantine" "$STORAGE_ROOT/firebird/logs" "$STORAGE_ROOT/firebird/scripts"

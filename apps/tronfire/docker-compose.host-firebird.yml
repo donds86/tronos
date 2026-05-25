@@ -15,6 +15,7 @@ services:
       TRONSOFTOS_API_URL: http://host.docker.internal:8080
     volumes:
       - /usr/local/firebird:/usr/local/firebird:ro
+      - /usr/local/firebird:/opt/firebird:ro
       - /opt/tronfire-storage/firebird:/firebird
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -31,6 +32,7 @@ services:
       TRONSOFTOS_API_URL: http://host.docker.internal:8080
     volumes:
       - /usr/local/firebird:/usr/local/firebird:ro
+      - /usr/local/firebird:/opt/firebird:ro
       - /opt/tronfire-storage/firebird:/firebird
       - /proc:/host/proc:ro
     extra_hosts:
