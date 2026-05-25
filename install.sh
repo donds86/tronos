@@ -122,7 +122,7 @@ set -a
 . "$APP_DIR/apps/tronfire/.env"
 set +a
 if [ "${FIREBIRD_EXEC_MODE:-container}" = "host" ]; then
-  bash "$APP_DIR/scripts/install-firebird25-host.sh"
+  TRONSOFTOS_APP_DIR="$APP_DIR" bash "$APP_DIR/scripts/install-firebird25-host.sh"
   docker compose -f docker-compose.yml -f docker-compose.host-firebird.yml up -d --build
   docker compose -f docker-compose.yml -f docker-compose.host-firebird.yml exec -T backend npx prisma migrate deploy
   docker compose -f docker-compose.yml -f docker-compose.host-firebird.yml exec -T backend node prisma/seed.js

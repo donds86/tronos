@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="${TRONSOFTOS_APP_DIR:-/opt/tronsoftos}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+APP_DIR="${TRONSOFTOS_APP_DIR:-$DEFAULT_APP_DIR}"
 PACKAGE="${FIREBIRD_PACKAGE:-$APP_DIR/apps/tronfire/docker/firebird25/FirebirdCS-2.5.9.27139-0.amd64.tar.gz}"
 TEMPLATE="${FIREBIRD_TEMPLATE:-$APP_DIR/apps/tronfire/docker/firebird25/template.fdb}"
 STORAGE_ROOT="${STORAGE_ROOT:-/opt/tronfire-storage}"
