@@ -25,6 +25,19 @@ const METRIC_CONTAINERS = [
 ].filter(name => FIREBIRD_EXEC_MODE === 'container' || name !== FIREBIRD_CONTAINER);
 let backupRunning = false;
 
+function firebirdExecOptions(timeout = 60_000, maxBuffer = 1024 * 1024 * 5) {
+  const firebirdLib = process.env.FIREBIRD_LIB || '/usr/local/firebird/lib';
+  const currentLdPath = process.env.LD_LIBRARY_PATH || '';
+  return {
+    timeout,
+    maxBuffer,
+    env: {
+      ...process.env,
+      LD_LIBRARY_PATH: [firebirdLib, currentLdPath].filter(Boolean).join(':')
+    }
+  };
+}
+
 async function docker(args, timeout = 60_000) {
   const { stdout, stderr } = await execFileAsync('docker', args, { timeout, maxBuffer: 1024 * 1024 * 10 });
   return { stdout, stderr };
@@ -33,7 +46,7 @@ async function docker(args, timeout = 60_000) {
 async function dockerExec(args, timeout = 60_000) {
   if (FIREBIRD_EXEC_MODE === 'host' || FIREBIRD_EXEC_MODE === 'direct') {
     const [command, ...commandArgs] = args;
-    const { stdout, stderr } = await execFileAsync(command, commandArgs, { timeout, maxBuffer: 1024 * 1024 * 5 });
+    const { stdout, stderr } = await execFileAsync(command, commandArgs, firebirdExecOptions(timeout));
     return { stdout, stderr };
   }
   const { stdout, stderr } = await execFileAsync('docker', ['exec', FIREBIRD_CONTAINER, ...args], { timeout, maxBuffer: 1024 * 1024 * 5 });

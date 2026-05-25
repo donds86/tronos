@@ -3,9 +3,16 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 
 function execOptions(options = {}) {
+  const firebirdLib = process.env.FIREBIRD_LIB || '/usr/local/firebird/lib';
+  const currentLdPath = process.env.LD_LIBRARY_PATH || '';
   return {
     timeout: options.timeout || 60_000,
-    maxBuffer: options.maxBuffer || 1024 * 1024 * 5
+    maxBuffer: options.maxBuffer || 1024 * 1024 * 5,
+    env: {
+      ...process.env,
+      ...(options.env || {}),
+      LD_LIBRARY_PATH: [firebirdLib, currentLdPath].filter(Boolean).join(':')
+    }
   };
 }
 

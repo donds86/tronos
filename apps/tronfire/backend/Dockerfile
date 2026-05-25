@@ -9,6 +9,7 @@ RUN apt-get update \
     libstdc++6 libtommath1 libncurses6 libtinfo6 \
   && ln -sf /lib/x86_64-linux-gnu/libncurses.so.6 /lib/x86_64-linux-gnu/libncurses.so.5 \
   && ln -sf /lib/x86_64-linux-gnu/libtinfo.so.6 /lib/x86_64-linux-gnu/libtinfo.so.5 \
+  && if [ -e /usr/lib/x86_64-linux-gnu/libtommath.so.1 ]; then ln -sf /usr/lib/x86_64-linux-gnu/libtommath.so.1 /usr/lib/x86_64-linux-gnu/libtommath.so.0; fi \
   && rm -rf /var/lib/apt/lists/*
 COPY backend/package*.json ./
 RUN npm install
