@@ -206,7 +206,7 @@ DEFAULT_DNS="$(detect_dns_servers)"
 line
 echo "Rede do servidor"
 echo "Informe o IP real deste Debian. Este IP deve existir na placa de rede do host."
-echo "Se quiser trocar ou fixar o IP agora, use a opcao abaixo."
+echo "A configuracao de IP fixo sera feita depois no painel do TronSoftOS."
 line
 
 SERVER_IP="$DEFAULT_SERVER_IP"
@@ -216,21 +216,7 @@ STATIC_IP_ADDRESS_CIDR="$DEFAULT_IPV4_CIDR"
 STATIC_IP_GATEWAY="$DEFAULT_GATEWAY"
 STATIC_IP_DNS="${DEFAULT_DNS:-1.1.1.1 8.8.8.8}"
 STATIC_IP_APPLY_NOW="false"
-
-if yes_no "Configurar/fixar IP deste host agora? (s/n)" "n"; then
-  STATIC_IP_ENABLED="true"
-  STATIC_IP_INTERFACE="$(ask "Interface de rede do host" "${DEFAULT_IFACE:-eth0}")"
-  STATIC_IP_ADDRESS_CIDR="$(ask "IP fixo com mascara CIDR (ex: 192.168.1.50/24)" "${DEFAULT_IPV4_CIDR:-192.168.1.50/24}")"
-  STATIC_IP_GATEWAY="$(ask "Gateway da rede" "${DEFAULT_GATEWAY:-192.168.1.1}")"
-  STATIC_IP_DNS="$(ask "DNS separados por espaco" "$STATIC_IP_DNS")"
-  SERVER_IP="$(ipv4_without_cidr "$STATIC_IP_ADDRESS_CIDR")"
-  echo "Atencao: aplicar agora pode derrubar a conexao SSH se o IP mudar."
-  if yes_no "Aplicar IP fixo imediatamente? (s/n)" "n"; then
-    STATIC_IP_APPLY_NOW="true"
-  fi
-else
-  SERVER_IP="$(ask "IP atual deste servidor na rede do cliente" "$DEFAULT_SERVER_IP")"
-fi
+SERVER_IP="$(ask "IP atual deste servidor na rede do cliente" "$DEFAULT_SERVER_IP")"
 
 FIREBIRD_MODE="host"
 echo "Firebird 2.5.9 sera instalado/usado no host Debian."
@@ -259,16 +245,12 @@ HA_PRIORITY="150"
 if [ "$DEPLOYMENT_MODE" = "ha" ]; then
   line
   echo "VIP do HA"
-  echo "O VIP deve ser um IP livre, nao usado por nenhum servidor."
-  echo "Ele deve ficar na mesma sub-rede/VLAN dos dois nos HA: $(same_ipv4_prefix_hint "${STATIC_IP_ADDRESS_CIDR:-$SERVER_IP}")"
+  echo "O VIP sera configurado depois no painel do TronSoftOS."
+  echo "Regra: IP livre na mesma sub-rede/VLAN dos dois nos HA: $(same_ipv4_prefix_hint "${STATIC_IP_ADDRESS_CIDR:-$SERVER_IP}")"
   echo "Nao use o IP real do primary nem do standby como VIP."
   line
-  HA_INTERFACE="$(ask "Interface de rede do VIP (ex: ens18, eth0)" "${STATIC_IP_INTERFACE:-eth0}")"
-  HA_VIP="$(ask "IP virtual/VIP" "")"
-  if [ -z "$HA_VIP" ] || [ "$HA_VIP" = "$SERVER_IP" ]; then
-    echo "VIP invalido: informe um IP livre diferente do IP real deste servidor." >&2
-    exit 78
-  fi
+  HA_INTERFACE="${STATIC_IP_INTERFACE:-$DEFAULT_IFACE}"
+  HA_VIP=""
   HA_PRIORITY="$(ask "Prioridade keepalived deste no" "$([ "$NODE_ROLE" = "primary" ] && echo 150 || echo 100)")"
 fi
 
@@ -450,12 +432,6 @@ EOF
 fi
 
 chmod 600 "$TRONSOFTOS_ENV" "$TRONFIRE_ENV" "$CLUSTER_SECRETS"
-
-if [ "$STATIC_IP_ENABLED" = "true" ]; then
-  line
-  echo "Configurando IP fixo do host..."
-  configure_static_ip "$STATIC_IP_INTERFACE" "$STATIC_IP_ADDRESS_CIDR" "$STATIC_IP_GATEWAY" "$STATIC_IP_DNS" "$STATIC_IP_APPLY_NOW" || true
-fi
 
 line
 echo "Configuracao gravada com sucesso:"

@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+action="${1:-}"
+
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+fail() {
+  local message="$1"
+  printf '{"ok":false,"error":"%s"}\n' "$(json_escape "$message")"
+  exit 1
+}
+
+valid_iface() {
+  [[ "$1" =~ ^[A-Za-z0-9_.:-]+$ ]]
+}
+
+valid_cidr() {
+  [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]]
+}
+
+valid_ipv4() {
+  [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+}
+
+valid_app_dir() {
+  [[ "$1" =~ ^/opt/[A-Za-z0-9._/-]+$ ]]
+}
+
+env_escape() {
+  printf '%s' "$1" | sed 's/[\/&]/\\&/g'
+}
+
+set_env_value() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  local escaped
+  escaped="$(env_escape "$value")"
+  [ -f "$file" ] || return 0
+  if grep -q "^$key=" "$file"; then
+    sed -i "s/^$key=.*/$key=$escaped/" "$file"
+  else
+    printf '\n%s=%s\n' "$key" "$value" >> "$file"
+  fi
+}
+
+sync_ip_envs() {
+  local app_dir="$1"
+  local iface="$2"
+  local address_cidr="$3"
+  local gateway="$4"
+  local dns="$5"
+  local server_ip="${address_cidr%%/*}"
+  local tronsoftos_env="/etc/tronsoftos/tronsoftos.env"
+  local tronfire_env="$app_dir/apps/tronfire/.env"
+
+  valid_app_dir "$app_dir" || fail "Diretorio da aplicacao invalido"
+
+  set_env_value "$tronsoftos_env" "HOST_STATIC_IP_ENABLED" "true"
+  set_env_value "$tronsoftos_env" "HOST_STATIC_IP_INTERFACE" "$iface"
+  set_env_value "$tronsoftos_env" "HOST_STATIC_IP_ADDRESS_CIDR" "$address_cidr"
+  set_env_value "$tronsoftos_env" "HOST_STATIC_IP_GATEWAY" "$gateway"
+  set_env_value "$tronsoftos_env" "HOST_STATIC_IP_DNS" "\"$dns\""
+
+  if [ -f "$tronsoftos_env" ] && ! grep -q '^HA_VIP=.\+' "$tronsoftos_env"; then
+    set_env_value "$tronsoftos_env" "CLOUDFLARE_TARGET_IP" "$server_ip"
+  fi
+
+  set_env_value "$tronfire_env" "TRONFIRE_LAN_HOST" "$server_ip"
+  local tronfire_port="8081"
+  if [ -f "$tronfire_env" ] && grep -q '^TRONFIRE_PANEL_PORT=' "$tronfire_env"; then
+    tronfire_port="$(grep '^TRONFIRE_PANEL_PORT=' "$tronfire_env" | tail -n1 | cut -d= -f2-)"
+  fi
+  set_env_value "$tronfire_env" "PUBLIC_URL" "http://$server_ip:$tronfire_port"
+}
+
+apply_static() {
+  local iface="${1:-}"
+  local address_cidr="${2:-}"
+  local gateway="${3:-}"
+  local dns="${4:-}"
+  local apply_now="${5:-false}"
+  local app_dir="${6:-}"
+
+  valid_iface "$iface" || fail "Interface invalida"
+  valid_cidr "$address_cidr" || fail "IP/CIDR invalido"
+  valid_ipv4 "$gateway" || fail "Gateway invalido"
+  [ -n "$dns" ] || fail "DNS nao informado"
+  [ -n "$app_dir" ] && sync_ip_envs "$app_dir" "$iface" "$address_cidr" "$gateway" "$dns"
+
+  if command -v nmcli >/dev/null 2>&1; then
+    local connection
+    connection="$(nmcli -t -f NAME,DEVICE connection show --active | awk -F: -v dev="$iface" '$2==dev {print $1; exit}')"
+    if [ -z "$connection" ]; then
+      connection="$(nmcli -t -f NAME,DEVICE connection show | awk -F: -v dev="$iface" '$2==dev {print $1; exit}')"
+    fi
+    [ -n "$connection" ] || fail "Conexao NetworkManager nao encontrada para $iface"
+
+    nmcli connection modify "$connection" \
+      ipv4.addresses "$address_cidr" \
+      ipv4.gateway "$gateway" \
+      ipv4.dns "$dns" \
+      ipv4.method manual \
+      connection.autoconnect yes
+
+    if [ "$apply_now" = "true" ]; then
+      nmcli connection up "$connection"
+    fi
+
+    printf '{"ok":true,"backend":"NetworkManager","interface":"%s","connection":"%s","addressCidr":"%s","applied":%s,"envUpdated":true}\n' \
+      "$(json_escape "$iface")" "$(json_escape "$connection")" "$(json_escape "$address_cidr")" "$apply_now"
+    return 0
+  fi
+
+  if systemctl list-unit-files systemd-networkd.service >/dev/null 2>&1; then
+    local network_file="/etc/systemd/network/10-tronsoftos-$iface.network"
+    {
+      echo "[Match]"
+      echo "Name=$iface"
+      echo
+      echo "[Network]"
+      echo "DHCP=no"
+      echo "Address=$address_cidr"
+      echo "Gateway=$gateway"
+      for dns_server in $dns; do
+        valid_ipv4 "$dns_server" || fail "DNS invalido: $dns_server"
+        echo "DNS=$dns_server"
+      done
+    } > "$network_file"
+
+    systemctl enable systemd-networkd.service >/dev/null 2>&1 || true
+    if [ "$apply_now" = "true" ]; then
+      systemctl restart systemd-networkd.service
+    fi
+
+    printf '{"ok":true,"backend":"systemd-networkd","interface":"%s","networkFile":"%s","addressCidr":"%s","applied":%s,"envUpdated":true}\n' \
+      "$(json_escape "$iface")" "$(json_escape "$network_file")" "$(json_escape "$address_cidr")" "$apply_now"
+    return 0
+  fi
+
+  fail "Nao encontrei NetworkManager nem systemd-networkd"
+}
+
+case "$action" in
+  apply-static)
+    shift
+    apply_static "$@"
+    ;;
+  *)
+    fail "Acao invalida"
+    ;;
+esac

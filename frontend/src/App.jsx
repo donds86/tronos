@@ -11,8 +11,10 @@ import {
   GitBranch,
   HardDrive,
   LayoutDashboard,
+  Network,
   Play,
   RefreshCw,
+  Save,
   Server,
   Settings,
   ShieldCheck,
@@ -165,6 +167,35 @@ function Stat({ label, value, detail, icon: Icon, tone = 'slate' }) {
         <div className={`rounded-md p-2 ${toneClass}`}>{Icon ? <Icon className="h-5 w-5" /> : null}</div>
       </div>
     </div>
+  );
+}
+
+function Field({ label, value, onChange, placeholder, type = 'text' }) {
+  return (
+    <label className="block">
+      <span className="text-xs font-medium uppercase text-slate-500">{label}</span>
+      <input
+        type={type}
+        value={value}
+        placeholder={placeholder}
+        onChange={event => onChange(event.target.value)}
+        className="mt-1 w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
+      />
+    </label>
+  );
+}
+
+function Checkbox({ label, checked, onChange }) {
+  return (
+    <label className="flex items-center gap-2 text-sm text-slate-700">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={event => onChange(event.target.checked)}
+        className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+      />
+      {label}
+    </label>
   );
 }
 
@@ -375,6 +406,73 @@ function EventsView() {
   );
 }
 
+function NetworkSettings() {
+  const queryClient = useQueryClient();
+  const networkQuery = useQuery({ queryKey: ['host-network'], queryFn: () => api('/api/host/network') });
+  const network = networkQuery.data;
+  const currentInterface = network?.defaultInterface || network?.interfaces?.[0]?.name || 'eth0';
+  const currentAddress = network?.interfaces?.find(item => item.name === currentInterface)?.addresses?.[0]?.cidr || '';
+  const currentDns = network?.dns?.join(' ') || '1.1.1.1 8.8.8.8';
+  const [form, setForm] = useState(null);
+  const values = form || {
+    interfaceName: currentInterface,
+    addressCidr: currentAddress,
+    gateway: network?.gateway || '',
+    dns: currentDns,
+    applyNow: false
+  };
+  const mutation = useMutation({
+    mutationFn: payload => postApi('/api/host/network/static', payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['host-network'] });
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+    }
+  });
+  const setValue = (key, value) => setForm(previous => ({ ...(previous || values), [key]: value }));
+
+  return (
+    <Card title="Rede do host" icon={Network} action={networkQuery.isFetching ? <StatusPill value="atualizando" /> : null}>
+      <div className="grid gap-5 xl:grid-cols-[0.8fr_1.2fr]">
+        <div className="space-y-3 text-sm">
+          <div className="flex justify-between border-b border-slate-100 pb-2"><span className="text-slate-500">Interface atual</span><span className="font-medium">{currentInterface}</span></div>
+          <div className="flex justify-between border-b border-slate-100 pb-2"><span className="text-slate-500">IP atual</span><span className="font-medium">{currentAddress || '-'}</span></div>
+          <div className="flex justify-between border-b border-slate-100 pb-2"><span className="text-slate-500">Gateway</span><span className="font-medium">{network?.gateway || '-'}</span></div>
+          <div className="flex justify-between border-b border-slate-100 pb-2"><span className="text-slate-500">DNS</span><span className="font-medium">{currentDns}</span></div>
+          {networkQuery.isError ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-red-700">Nao foi possivel ler a rede do host.</div> : null}
+        </div>
+        <form
+          className="grid gap-3 md:grid-cols-2"
+          onSubmit={event => {
+            event.preventDefault();
+            mutation.mutate(values);
+          }}
+        >
+          <Field label="Interface" value={values.interfaceName} onChange={value => setValue('interfaceName', value)} placeholder="eth0" />
+          <Field label="IP fixo/CIDR" value={values.addressCidr} onChange={value => setValue('addressCidr', value)} placeholder="192.168.1.50/24" />
+          <Field label="Gateway" value={values.gateway} onChange={value => setValue('gateway', value)} placeholder="192.168.1.1" />
+          <Field label="DNS" value={values.dns} onChange={value => setValue('dns', value)} placeholder="1.1.1.1 8.8.8.8" />
+          <div className="md:col-span-2">
+            <Checkbox label="Aplicar imediatamente" checked={values.applyNow} onChange={value => setValue('applyNow', value)} />
+          </div>
+          <div className="flex items-center gap-3 md:col-span-2">
+            <button disabled={mutation.isPending} className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-950 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50">
+              <Save className="h-4 w-4" />
+              Salvar rede
+            </button>
+            {mutation.isSuccess ? <StatusPill value="online" /> : null}
+            {mutation.isError ? <span className="text-sm text-red-700">{mutation.error.message}</span> : null}
+          </div>
+          {mutation.data?.reloadRequired ? (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 md:col-span-2">
+              Arquivos de configuracao atualizados. Reinicie TronSoftOS e TronFire para carregar o novo IP.
+            </div>
+          ) : null}
+        </form>
+      </div>
+    </Card>
+  );
+}
+
 function SettingsView() {
   return (
     <div className="space-y-5">
@@ -385,6 +483,7 @@ function SettingsView() {
           <Stat label="Containers" value="Catalogo" detail="managed-apps.json" icon={Boxes} />
         </div>
       </Card>
+      <NetworkSettings />
       <Card title="Pareamento HA" icon={ShieldCheck}>
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>

@@ -90,6 +90,13 @@ async function run(command, args, options = {}) {
   return { stdout, stderr };
 }
 
+async function privilegedRun(command, args, options = {}) {
+  if (process.getuid && process.getuid() !== 0) {
+    return run('sudo', [command, ...args], options);
+  }
+  return run(command, args, options);
+}
+
 async function commandExists(command) {
   try {
     if (process.platform === 'win32') await run('where', [command], { timeout: 5000 });
@@ -98,6 +105,10 @@ async function commandExists(command) {
   } catch {
     return false;
   }
+}
+
+function parseJsonLines(text) {
+  return text.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
 }
 
 async function containerStatus(names = []) {
@@ -234,9 +245,94 @@ async function hostFirebirdStatus() {
 async function hostFirebirdAction(action) {
   if (!['start', 'stop', 'restart'].includes(action)) throw new Error('invalid action');
   const service = process.env.FIREBIRD_SERVICE || 'firebird';
-  const out = await run('systemctl', [action, service], { timeout: action === 'restart' ? 120_000 : 60_000, maxBuffer: 1024 * 1024 * 2 });
+  const out = await privilegedRun('/usr/bin/systemctl', [action, service], { timeout: action === 'restart' ? 120_000 : 60_000, maxBuffer: 1024 * 1024 * 2 });
   appendEvent(`FIREBIRD_HOST_${action.toUpperCase()}`, { service, stdout: out.stdout, stderr: out.stderr });
   return { ok: true, mode: 'host', service, action };
+}
+
+async function hostNetworkStatus() {
+  let interfaces = [];
+  try {
+    const { stdout } = await run('ip', ['-j', '-4', 'addr', 'show', 'scope', 'global'], { timeout: 10_000, maxBuffer: 1024 * 1024 * 2 });
+    interfaces = JSON.parse(stdout).map(item => ({
+      name: item.ifname,
+      addresses: (item.addr_info || []).map(addr => ({
+        address: addr.local,
+        prefixLength: addr.prefixlen,
+        cidr: `${addr.local}/${addr.prefixlen}`
+      }))
+    }));
+  } catch (err) {
+    interfaces = [{ name: 'erro', addresses: [], error: err.message }];
+  }
+
+  let defaultRoute = null;
+  try {
+    const { stdout } = await run('ip', ['-j', 'route', 'show', 'default'], { timeout: 10_000, maxBuffer: 1024 * 1024 });
+    defaultRoute = JSON.parse(stdout)[0] || null;
+  } catch {
+    defaultRoute = null;
+  }
+
+  let dns = [];
+  try {
+    dns = fs.readFileSync('/etc/resolv.conf', 'utf8')
+      .split(/\r?\n/)
+      .map(line => line.match(/^nameserver\s+(\S+)/)?.[1])
+      .filter(Boolean);
+  } catch {
+    dns = [];
+  }
+
+  return {
+    interfaces,
+    defaultInterface: defaultRoute?.dev || interfaces[0]?.name || null,
+    gateway: defaultRoute?.gateway || null,
+    dns,
+    configured: {
+      enabled: process.env.HOST_STATIC_IP_ENABLED === 'true',
+      interface: process.env.HOST_STATIC_IP_INTERFACE || null,
+      addressCidr: process.env.HOST_STATIC_IP_ADDRESS_CIDR || null,
+      gateway: process.env.HOST_STATIC_IP_GATEWAY || null,
+      dns: process.env.HOST_STATIC_IP_DNS || null
+    }
+  };
+}
+
+function assertNetworkPayload(body) {
+  const payload = {
+    interfaceName: String(body.interfaceName || '').trim(),
+    addressCidr: String(body.addressCidr || '').trim(),
+    gateway: String(body.gateway || '').trim(),
+    dns: Array.isArray(body.dns) ? body.dns.join(' ') : String(body.dns || '').trim(),
+    applyNow: body.applyNow === true
+  };
+  if (!/^[A-Za-z0-9_.:-]+$/.test(payload.interfaceName)) throw new Error('interface invalida');
+  if (!/^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/.test(payload.addressCidr)) throw new Error('ip/cidr invalido');
+  if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(payload.gateway)) throw new Error('gateway invalido');
+  if (!payload.dns) throw new Error('dns nao informado');
+  return payload;
+}
+
+async function hostNetworkStatic(body) {
+  const payload = assertNetworkPayload(body);
+  const out = await privilegedRun('/usr/local/sbin/tronsoftos-network', [
+    'apply-static',
+    payload.interfaceName,
+    payload.addressCidr,
+    payload.gateway,
+    payload.dns,
+    payload.applyNow ? 'true' : 'false',
+    appRoot
+  ], { timeout: 120_000, maxBuffer: 1024 * 1024 * 2 });
+  const result = parseJsonLines(out.stdout).at(-1) || { ok: true };
+  appendEvent('HOST_NETWORK_STATIC_CONFIGURED', { ...payload, result });
+  return {
+    ...result,
+    reloadRequired: true,
+    reloadHint: 'Reinicie TronSoftOS e containers TronFire para carregar os envs atualizados.',
+    stderr: out.stderr
+  };
 }
 
 function exportPairingFile(reply) {
@@ -333,6 +429,8 @@ async function handleApi(req, reply, url) {
   if (req.method === 'GET' && url.pathname === '/api/events') return json(reply, 200, { events: readEvents(Number(url.searchParams.get('limit') || 100)) });
   if (req.method === 'GET' && url.pathname === '/api/cluster/pairing-file') return exportPairingFile(reply);
   if (req.method === 'GET' && url.pathname === '/api/host/firebird') return json(reply, 200, await hostFirebirdStatus());
+  if (req.method === 'GET' && url.pathname === '/api/host/network') return json(reply, 200, await hostNetworkStatus());
+  if (req.method === 'POST' && url.pathname === '/api/host/network/static') return json(reply, 200, await hostNetworkStatic(await readBody(req)));
   const hostFirebirdMatch = url.pathname.match(/^\/api\/host\/firebird\/(start|stop|restart)$/);
   if (req.method === 'POST' && hostFirebirdMatch) return json(reply, 200, await hostFirebirdAction(hostFirebirdMatch[1]));
   const actionMatch = url.pathname.match(/^\/api\/apps\/([^/]+)\/(up|stop|restart|pull)$/);

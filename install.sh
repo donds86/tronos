@@ -50,7 +50,7 @@ fi
 
 echo "Instalando pacotes base..."
 apt-get update
-apt-get install -y ca-certificates curl gnupg rsync openssh-client openssh-server keepalived rclone nodejs npm
+apt-get install -y ca-certificates curl gnupg rsync openssh-client openssh-server keepalived rclone nodejs npm sudo
 install_docker
 
 echo "Criando usuario e diretorios..."
@@ -109,9 +109,12 @@ if [ -f "$APP_DIR/apps/tronfire/docker/firebird25/template.fdb" ]; then
 fi
 
 echo "Instalando systemd..."
+install -m 0755 "$APP_DIR/infra/sbin/tronsoftos-network" /usr/local/sbin/tronsoftos-network
+install -m 0440 "$APP_DIR/infra/sudoers/tronsoftos" /etc/sudoers.d/tronsoftos
 cp "$APP_DIR/infra/systemd/tronsoftos.service" /etc/systemd/system/tronsoftos.service
 cp "$APP_DIR/infra/systemd/tronsoftos-rclone-backup.service" /etc/systemd/system/tronsoftos-rclone-backup.service
 cp "$APP_DIR/infra/systemd/tronsoftos-rclone-backup.timer" /etc/systemd/system/tronsoftos-rclone-backup.timer
+sed -i "s|/opt/tronsoftos|$APP_DIR|g" /etc/systemd/system/tronsoftos.service
 
 chown -R "$USER_NAME:$GROUP_NAME" "$APP_DIR" /opt/tronfire-storage
 chmod +x "$APP_DIR/scripts/"*.sh "$APP_DIR/infra/keepalived/check-tronsoftos.sh"

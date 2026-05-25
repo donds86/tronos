@@ -1,0 +1,2 @@
+tronsoftos ALL=(root) NOPASSWD: /usr/local/sbin/tronsoftos-network *
+tronsoftos ALL=(root) NOPASSWD: /usr/bin/systemctl start firebird, /usr/bin/systemctl stop firebird, /usr/bin/systemctl restart firebird
