@@ -102,6 +102,10 @@ function firebirdDbConnect(filePath) {
   return value;
 }
 
+function firebirdCreateTarget(filePath) {
+  return firebirdDbConnect(filePath);
+}
+
 function isHaMode() {
   return deploymentMode === 'ha';
 }
@@ -959,7 +963,7 @@ app.post('/api/databases/:id/auto-maintenance', { preHandler: requireOperator },
       'echo "[5/7] Restaurando backup logico em arquivo temporario" >> "$log"',
       'restore_src="/tmp/tronfire_maintenance_${RANDOM}.gbk"',
       'gzip -dc "$backup" > "$restore_src"',
-      `${gbak} -c -v -user SYSDBA -password ${password} "$restore_src" "$repaired" >> "$log" 2>&1`,
+      `${gbak} -c -v -user SYSDBA -password ${password} "$restore_src" ${shQuote(firebirdCreateTarget(repairedPath))} >> "$log" 2>&1`,
       'rm -f "$restore_src"',
       'echo "[6/7] Validando banco restaurado" >> "$log"',
       `${gstat} -h "$repaired" >> "$log" 2>&1`,
@@ -1149,7 +1153,7 @@ app.post('/api/restores/from-upload', { preHandler: requireOperator }, async (re
       'rm -f "$temp_dest"',
       'restore_src="$src"',
       'case "$src" in *.gz) restore_src="/tmp/tronfire_restore_${RANDOM}.gbk"; gzip -dc "$src" > "$restore_src" ;; esac',
-      `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gbak`)} -c -v -user SYSDBA -password ${shQuote(process.env.FIREBIRD_PASSWORD || 'masterkey')} "$restore_src" "$temp_dest" > "$log" 2>&1`,
+      `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gbak`)} -c -v -user SYSDBA -password ${shQuote(process.env.FIREBIRD_PASSWORD || 'masterkey')} "$restore_src" ${shQuote(firebirdCreateTarget(tempRestorePath))} > "$log" 2>&1`,
       'if [ "$restore_src" != "$src" ]; then rm -f "$restore_src"; fi',
       `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gstat`)} -h "$temp_dest" >> "$log" 2>&1`,
       'test -f "$target" && cp "$target" "$current_backup"',
@@ -1240,7 +1244,7 @@ app.post('/api/ha/standby/restore', async (req, reply) => {
       'rm -f "$temp_dest"',
       'restore_src="$src"',
       'case "$src" in *.gz) restore_src="/tmp/tronfire_standby_restore_${RANDOM}.gbk"; gzip -dc "$src" > "$restore_src" ;; esac',
-      `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gbak`)} -c -v -user SYSDBA -password ${shQuote(process.env.FIREBIRD_PASSWORD || 'masterkey')} "$restore_src" "$temp_dest" > "$log" 2>&1`,
+      `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gbak`)} -c -v -user SYSDBA -password ${shQuote(process.env.FIREBIRD_PASSWORD || 'masterkey')} "$restore_src" ${shQuote(firebirdCreateTarget(tempRestorePath))} > "$log" 2>&1`,
       'if [ "$restore_src" != "$src" ]; then rm -f "$restore_src"; fi',
       `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gstat`)} -h "$temp_dest" >> "$log" 2>&1`,
       'mv "$temp_dest" "$standby"',
