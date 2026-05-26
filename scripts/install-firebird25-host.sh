@@ -62,11 +62,10 @@ configure_sysdba_password() {
   local gsec_env="LD_LIBRARY_PATH=/usr/local/firebird/lib:${LD_LIBRARY_PATH:-}"
 
   if [ -f "$pass_file" ]; then
-    parsed_password="$(awk -F= '
+    parsed_password="$(awk '
       /ISC_PASSWORD|PASSWORD|Password|password/ {
-        value=$2
-        if (value == "") value=$0
-        gsub(/.*[:=][[:space:]]*/, "", value)
+        value=$0
+        sub(/^[^:=]*[:=][[:space:]]*/, "", value)
         gsub(/["'\'' \r]/, "", value)
         print value
         exit
@@ -76,6 +75,11 @@ configure_sysdba_password() {
 
   [ -n "$parsed_password" ] && candidates+=("$parsed_password")
   candidates+=("$desired_password" "masterkey")
+  if [ -f "$pass_file" ]; then
+    while IFS= read -r word; do
+      [ -n "$word" ] && candidates+=("$word")
+    done < <(tr -cs '[:alnum:]_#@%+=.,:;!?()-' '\n' < "$pass_file" | awk 'length($0) >= 4')
+  fi
 
   for current_password in "${candidates[@]}"; do
     [ -n "$current_password" ] || continue
