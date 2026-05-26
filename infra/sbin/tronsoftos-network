@@ -144,10 +144,29 @@ apply_static() {
   fail "Nao encontrei NetworkManager nem systemd-networkd"
 }
 
+install_firebird_aliases() {
+  local source_file="${1:-}"
+  [ -f "$source_file" ] || fail "Arquivo de aliases nao encontrado"
+  [[ "$source_file" =~ ^/tmp/tronsoftos-aliases-[A-Za-z0-9._-]+\.conf$ ]] || fail "Caminho de aliases invalido"
+
+  local target="/usr/local/firebird/aliases.conf"
+  [ -d /usr/local/firebird ] || fail "/usr/local/firebird nao encontrado"
+  install -m 0644 "$source_file" "$target"
+  if [ -d /opt/firebird ] && [ ! "$target" -ef /opt/firebird/aliases.conf ]; then
+    install -m 0644 "$source_file" /opt/firebird/aliases.conf
+  fi
+
+  printf '{"ok":true,"target":"%s"}\n' "$(json_escape "$target")"
+}
+
 case "$action" in
   apply-static)
     shift
     apply_static "$@"
+    ;;
+  install-firebird-aliases)
+    shift
+    install_firebird_aliases "$@"
     ;;
   *)
     fail "Acao invalida"

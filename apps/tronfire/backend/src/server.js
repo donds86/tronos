@@ -264,6 +264,14 @@ async function syncFirebirdAliases() {
     lines.push(`${db.alias} = ${db.filePath}`);
   }
   const content = `${lines.join('\n')}\n`;
+  if (firebirdExecMode !== 'container') {
+    await tronsoftosRequest('/api/host/firebird/aliases', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content })
+    });
+    return;
+  }
   await dockerExec(['sh', '-lc', `cat > /usr/local/firebird/aliases.conf <<'EOF'\n${content}EOF\n`], { timeout: 120000 });
 }
 

@@ -250,6 +250,36 @@ async function hostFirebirdAction(action) {
   return { ok: true, mode: 'host', service, action };
 }
 
+function assertInternalToken(req) {
+  const expected = process.env.TRONSOFTOS_INTERNAL_TOKEN || '';
+  if (!expected) return;
+  const received = String(req.headers['x-tronsoftos-token'] || '');
+  if (received !== expected) {
+    const error = new Error('Token interno TronSoftOS invalido');
+    error.statusCode = 403;
+    throw error;
+  }
+}
+
+async function hostFirebirdAliases(req) {
+  assertInternalToken(req);
+  const body = await readBody(req);
+  const content = String(body.content || '');
+  if (!content.includes('Managed by TronFire')) throw new Error('aliases.conf invalido');
+  if (content.length > 1024 * 256) throw new Error('aliases.conf muito grande');
+  ensureStateDir();
+  const tmpPath = `/tmp/tronsoftos-aliases-${Date.now()}-${Math.random().toString(16).slice(2)}.conf`;
+  fs.writeFileSync(tmpPath, content, { mode: 0o600 });
+  try {
+    const out = await privilegedRun('/usr/local/sbin/tronsoftos-network', ['install-firebird-aliases', tmpPath], { timeout: 60_000, maxBuffer: 1024 * 1024 });
+    const result = parseJsonLines(out.stdout).at(-1) || { ok: true };
+    appendEvent('FIREBIRD_ALIASES_UPDATED', { target: result.target });
+    return { ...result, stderr: out.stderr };
+  } finally {
+    fs.rmSync(tmpPath, { force: true });
+  }
+}
+
 async function hostNetworkStatus() {
   let interfaces = [];
   try {
@@ -429,6 +459,7 @@ async function handleApi(req, reply, url) {
   if (req.method === 'GET' && url.pathname === '/api/events') return json(reply, 200, { events: readEvents(Number(url.searchParams.get('limit') || 100)) });
   if (req.method === 'GET' && url.pathname === '/api/cluster/pairing-file') return exportPairingFile(reply);
   if (req.method === 'GET' && url.pathname === '/api/host/firebird') return json(reply, 200, await hostFirebirdStatus());
+  if (req.method === 'POST' && url.pathname === '/api/host/firebird/aliases') return json(reply, 200, await hostFirebirdAliases(req));
   if (req.method === 'GET' && url.pathname === '/api/host/network') return json(reply, 200, await hostNetworkStatus());
   if (req.method === 'POST' && url.pathname === '/api/host/network/static') return json(reply, 200, await hostNetworkStatic(await readBody(req)));
   const hostFirebirdMatch = url.pathname.match(/^\/api\/host\/firebird\/(start|stop|restart)$/);
