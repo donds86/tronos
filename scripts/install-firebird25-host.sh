@@ -54,6 +54,36 @@ ensure_legacy_ncurses() {
 
 ensure_legacy_ncurses
 
+configure_sysdba_password() {
+  local desired_password="${FIREBIRD_PASSWORD:-masterkey}"
+  local pass_file="/usr/local/firebird/SYSDBA.password"
+  local parsed_password=""
+  local candidates=()
+
+  if [ -f "$pass_file" ]; then
+    parsed_password="$(awk -F= '/ISC_PASSWORD/ {gsub(/[" \r]/, "", $2); print $2; exit}' "$pass_file" 2>/dev/null || true)"
+  fi
+
+  [ -n "$parsed_password" ] && candidates+=("$parsed_password")
+  candidates+=("$desired_password" "masterkey")
+
+  for current_password in "${candidates[@]}"; do
+    [ -n "$current_password" ] || continue
+    if printf 'display sysdba\nquit\n' | /usr/local/firebird/bin/gsec -user sysdba -password "$current_password" >/tmp/tronsoftos-gsec.log 2>&1; then
+      if [ "$current_password" != "$desired_password" ]; then
+        printf 'modify sysdba -pw %s\nquit\n' "$desired_password" | /usr/local/firebird/bin/gsec -user sysdba -password "$current_password" >/tmp/tronsoftos-gsec.log 2>&1
+      fi
+      echo "Senha SYSDBA do Firebird host sincronizada."
+      return 0
+    fi
+  done
+
+  echo "Aviso: nao foi possivel sincronizar a senha SYSDBA automaticamente." >&2
+  echo "Verifique /usr/local/firebird/SYSDBA.password e ajuste FIREBIRD_PASSWORD no TronFire." >&2
+  cat /tmp/tronsoftos-gsec.log >&2 || true
+  return 0
+}
+
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
@@ -111,5 +141,7 @@ EOF
 
 systemctl daemon-reload
 systemctl enable --now firebird.service
+configure_sysdba_password
+systemctl restart firebird.service
 
 echo "Firebird 2.5.9 instalado no host em /usr/local/firebird"
