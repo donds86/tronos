@@ -747,7 +747,7 @@ async function uploads() {
     </div></div>
     <div class="card"><div class="card-body">
       <h3>Usar arquivo ja copiado no servidor</h3>
-      <div class="text-muted small mb-3">Copie o arquivo para /opt/tronsoftos/data/tronfire/firebird/uploads e use esta opcao para evitar upload pelo navegador.</div>
+      <div class="text-muted small mb-3">Copie o arquivo para /opt/tronfire-storage/firebird/uploads e use esta opcao para evitar upload pelo navegador.</div>
       <div class="row g-3">
         <div class="col-md-4">
           <label class="form-label">Banco escolhido</label>

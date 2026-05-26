@@ -13,6 +13,7 @@ const FIREBIRD_CONTAINER = process.env.FIREBIRD_CONTAINER || 'tronfire_firebird2
 const FIREBIRD_PASSWORD = process.env.FIREBIRD_PASSWORD || 'masterkey';
 const FIREBIRD_EXEC_MODE = String(process.env.FIREBIRD_EXEC_MODE || 'container').toLowerCase();
 const TRONFIRE_NODE_ROLE = String(process.env.TRONFIRE_NODE_ROLE || 'primary').toLowerCase();
+const FIREBIRD_HOST = process.env.FIREBIRD_HOST || 'host.docker.internal';
 const HOST_PROC_ROOT = process.env.HOST_PROC_ROOT || '/host/proc';
 const FIREBIRD_HOST_TARGET = 'firebird_host';
 const FIREBIRD_PROCESS_NAMES = new Set(['fbguard', 'fbserver', 'fb_inet_server', 'fb_smp_server', 'firebird']);
@@ -59,6 +60,12 @@ function isPrimaryNode() {
 
 function shQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function firebirdDbConnect(filePath) {
+  const value = String(filePath || '').trim();
+  if (FIREBIRD_EXEC_MODE === 'host' || FIREBIRD_EXEC_MODE === 'direct') return `${FIREBIRD_HOST}:${value}`;
+  return value;
 }
 
 function backupStamp() {
@@ -401,7 +408,7 @@ async function runBackup(db, reason = 'AUTO') {
       '-b -v',
       '-user SYSDBA',
       `-password ${shQuote(FIREBIRD_PASSWORD)}`,
-      shQuote(db.filePath),
+      shQuote(firebirdDbConnect(db.filePath)),
       shQuote(rawBackupPath),
       `> ${shQuote(logPath)} 2>&1`,
       `&& gzip -f ${shQuote(rawBackupPath)}`
@@ -495,11 +502,12 @@ async function checkDatabases() {
       const logPath = `/firebird/logs/check_${db.alias}.log`;
       const cmd = [
         'set -e',
-        `db=${shQuote(db.filePath)}`,
+        `db_file=${shQuote(db.filePath)}`,
+        `db=${shQuote(firebirdDbConnect(db.filePath))}`,
         `log=${shQuote(logPath)}`,
-        'test -f "$db"',
+        'test -f "$db_file"',
         `${shQuote(`${FIREBIRD_BIN}/gfix`)} -v -full -user SYSDBA -password ${shQuote(FIREBIRD_PASSWORD)} "$db" > "$log" 2>&1`,
-        `${shQuote(`${FIREBIRD_BIN}/gstat`)} -h "$db" >> "$log" 2>&1`
+        `${shQuote(`${FIREBIRD_BIN}/gstat`)} -h "$db_file" >> "$log" 2>&1`
       ].join('; ');
       await dockerExec(['sh','-lc', cmd], 120_000);
       await prisma.managedDatabase.update({ where: { id: db.id }, data: { status: 'ONLINE', lastCheckAt: new Date() } });

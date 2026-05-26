@@ -40,6 +40,7 @@ const clusterLockPath = process.env.TRONSOFTOS_CLUSTER_LOCK || '/opt/tronsoftos/
 const internalToken = process.env.TRONSOFTOS_INTERNAL_TOKEN || '';
 const firebirdExecMode = String(process.env.FIREBIRD_EXEC_MODE || 'container').toLowerCase();
 const tronsoftosApiUrl = String(process.env.TRONSOFTOS_API_URL || 'http://host.docker.internal:8080').replace(/\/+$/, '');
+const firebirdInternalHost = process.env.FIREBIRD_HOST || 'host.docker.internal';
 
 await app.register(cors, { origin: true, credentials: true });
 await app.register(cookie, { secret: process.env.SESSION_SECRET || 'dev-secret-change-me' });
@@ -93,6 +94,12 @@ function databasePathForAlias(alias) {
 
 function standbyPathForAlias(alias) {
   return `/firebird/standby/${normalizeAlias(alias)}_standby.fdb`;
+}
+
+function firebirdDbConnect(filePath) {
+  const value = String(filePath || '').trim();
+  if (firebirdExecMode === 'host' || firebirdExecMode === 'direct') return `${firebirdInternalHost}:${value}`;
+  return value;
 }
 
 function isHaMode() {
@@ -864,11 +871,12 @@ app.post('/api/databases/:id/online', { preHandler: requireOperator }, async (re
   try {
     const cmd = [
       'set -e',
-      `db=${shQuote(db.filePath)}`,
+      `db_file=${shQuote(db.filePath)}`,
+      `db=${shQuote(firebirdDbConnect(db.filePath))}`,
       `log=${shQuote(logPath)}`,
-      'test -f "$db"',
+      'test -f "$db_file"',
       `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gfix`)} -online -user SYSDBA -password ${shQuote(process.env.FIREBIRD_PASSWORD || 'masterkey')} "$db" > "$log" 2>&1`,
-      `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gstat`)} -h "$db" >> "$log" 2>&1`
+      `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gstat`)} -h "$db_file" >> "$log" 2>&1`
     ].join('; ');
     await dockerExec(['sh', '-lc', cmd], { timeout: 120000 });
     const updated = await prisma.managedDatabase.update({ where: { id: db.id }, data: { status: 'ONLINE', lastCheckAt: new Date() } });
@@ -888,11 +896,12 @@ app.post('/api/databases/:id/integrity-check', { preHandler: requireOperator }, 
   try {
     const cmd = [
       'set -e',
-      `db=${shQuote(db.filePath)}`,
+      `db_file=${shQuote(db.filePath)}`,
+      `db=${shQuote(firebirdDbConnect(db.filePath))}`,
       `log=${shQuote(logPath)}`,
-      'test -f "$db"',
+      'test -f "$db_file"',
       `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gfix`)} -v -full -user SYSDBA -password ${shQuote(process.env.FIREBIRD_PASSWORD || 'masterkey')} "$db" > "$log" 2>&1`,
-      `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gstat`)} -h "$db" >> "$log" 2>&1`
+      `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gstat`)} -h "$db_file" >> "$log" 2>&1`
     ].join('; ');
     await dockerExec(['sh', '-lc', cmd], { timeout: 1000 * 60 * 20 });
     const updated = await prisma.managedDatabase.update({ where: { id: db.id }, data: { status: 'ONLINE', lastCheckAt: new Date() } });
@@ -928,17 +937,18 @@ app.post('/api/databases/:id/auto-maintenance', { preHandler: requireOperator },
     const gstat = shQuote(`${bin}/gstat`);
     const cmd = [
       'set -e',
-      `db=${shQuote(db.filePath)}`,
+      `db_file=${shQuote(db.filePath)}`,
+      `db=${shQuote(firebirdDbConnect(db.filePath))}`,
       `raw_backup=${shQuote(rawBackupPath)}`,
       `backup=${shQuote(backupPath)}`,
       `safety=${shQuote(safetyCopyPath)}`,
       `repaired=${shQuote(repairedPath)}`,
       `log=${shQuote(logPath)}`,
       'mkdir -p /firebird/backups /firebird/restore-work /firebird/logs',
-      'test -f "$db"',
+      'test -f "$db_file"',
       'rm -f "$raw_backup" "$backup" "$repaired"',
       'echo "[1/7] Copia fisica de seguranca antes da manutencao" > "$log"',
-      'cp -p "$db" "$safety"',
+      'cp -p "$db_file" "$safety"',
       'echo "[2/7] Colocando banco em modo manutencao, quando suportado" >> "$log"',
       `${gfix} -shut -force 0 -user SYSDBA -password ${password} "$db" >> "$log" 2>&1 || true`,
       'echo "[3/7] Tentando corrigir paginas danificadas com gfix -mend" >> "$log"',
@@ -954,9 +964,10 @@ app.post('/api/databases/:id/auto-maintenance', { preHandler: requireOperator },
       'echo "[6/7] Validando banco restaurado" >> "$log"',
       `${gstat} -h "$repaired" >> "$log" 2>&1`,
       'echo "[7/7] Substituindo banco original pelo restaurado validado" >> "$log"',
-      'mv "$repaired" "$db"',
+      'mv "$repaired" "$db_file"',
+      'chmod 0666 "$db_file"',
       `${gfix} -online -user SYSDBA -password ${password} "$db" >> "$log" 2>&1 || true`,
-      `${gstat} -h "$db" >> "$log" 2>&1`
+      `${gstat} -h "$db_file" >> "$log" 2>&1`
     ].join('; ');
     await dockerExec(['sh', '-lc', cmd], { timeout: 1000 * 60 * 60 * 4 });
     const { stdout: sizeOut } = await dockerExec(['stat', '-c', '%s', backupPath]);
@@ -1013,7 +1024,7 @@ app.post('/api/backups/:databaseId/run', { preHandler: requireOperator }, async 
   const logPath = `/firebird/logs/backup_${db.alias}_${stamp}.log`;
   const job = await prisma.backupJob.create({ data: { databaseId: db.id, status: 'RUNNING', startedAt: new Date(), backupPath, manifestPath, sourceNode: process.env.TRONSOFTOS_NODE_NAME || null, targetAlias: db.alias, logPath } });
   try {
-    const cmd = `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gbak`)} -b -v -user SYSDBA -password ${shQuote(process.env.FIREBIRD_PASSWORD || 'masterkey')} ${shQuote(db.filePath)} ${shQuote(rawBackupPath)} > ${shQuote(logPath)} 2>&1 && gzip -f ${shQuote(rawBackupPath)}`;
+    const cmd = `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gbak`)} -b -v -user SYSDBA -password ${shQuote(process.env.FIREBIRD_PASSWORD || 'masterkey')} ${shQuote(firebirdDbConnect(db.filePath))} ${shQuote(rawBackupPath)} > ${shQuote(logPath)} 2>&1 && gzip -f ${shQuote(rawBackupPath)}`;
     await dockerExec(['sh','-lc', cmd], { timeout: 1000 * 60 * 60 * 4 });
     const { stdout: sizeOut } = await dockerExec(['stat','-c','%s', backupPath]);
     const { stdout: shaOut } = await dockerExec(['sha256sum', backupPath]);
@@ -1143,6 +1154,7 @@ app.post('/api/restores/from-upload', { preHandler: requireOperator }, async (re
       `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gstat`)} -h "$temp_dest" >> "$log" 2>&1`,
       'test -f "$target" && cp "$target" "$current_backup"',
       'mv "$temp_dest" "$target"',
+      'chmod 0666 "$target"',
       `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gstat`)} -h "$target" >> "$log" 2>&1`
     ].join('; ');
     await dockerExec(['sh', '-lc', cmd], { timeout: 1000 * 60 * 60 * 4 });
@@ -1232,6 +1244,7 @@ app.post('/api/ha/standby/restore', async (req, reply) => {
       'if [ "$restore_src" != "$src" ]; then rm -f "$restore_src"; fi',
       `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gstat`)} -h "$temp_dest" >> "$log" 2>&1`,
       'mv "$temp_dest" "$standby"',
+      'chmod 0666 "$standby"',
       `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gstat`)} -h "$standby" >> "$log" 2>&1`
     ].join('; ');
     await dockerExec(['sh', '-lc', cmd], { timeout: 1000 * 60 * 60 * 4 });
@@ -1318,6 +1331,7 @@ app.post('/api/ha/standby/promote', async (req, reply) => {
       'test -f "$standby"',
       'if [ -f "$prod" ]; then mv "$prod" "$backup_current"; fi',
       'mv "$standby" "$prod"',
+      'chmod 0666 "$prod"',
       `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gstat`)} -h "$prod" > "$log" 2>&1`
     ].join('; ');
     await dockerExec(['sh', '-lc', cmd], { timeout: 1000 * 60 * 20 });
