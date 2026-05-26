@@ -119,13 +119,23 @@ sed -i "s|/opt/tronsoftos|$APP_DIR|g" /etc/systemd/system/tronsoftos.service
 chown -R "$USER_NAME:$GROUP_NAME" "$APP_DIR" /opt/tronfire-storage
 chmod +x "$APP_DIR/scripts/"*.sh "$APP_DIR/infra/keepalived/check-tronsoftos.sh"
 
-echo "Subindo TronFire e aplicando migrations..."
+systemctl daemon-reload
+
+echo "Subindo servicos do host..."
 cd "$APP_DIR/apps/tronfire"
 set -a
 . "$APP_DIR/apps/tronfire/.env"
 set +a
 if [ "${FIREBIRD_EXEC_MODE:-container}" = "host" ]; then
   TRONSOFTOS_APP_DIR="$APP_DIR" bash "$APP_DIR/scripts/install-firebird25-host.sh"
+fi
+
+systemctl enable --now tronsoftos.service
+systemctl enable --now tronsoftos-rclone-backup.timer
+
+echo "Subindo TronFire e aplicando migrations..."
+cd "$APP_DIR/apps/tronfire"
+if [ "${FIREBIRD_EXEC_MODE:-container}" = "host" ]; then
   docker compose -f docker-compose.yml -f docker-compose.host-firebird.yml up -d --build
   docker compose -f docker-compose.yml -f docker-compose.host-firebird.yml exec -T backend npx prisma migrate deploy
   docker compose -f docker-compose.yml -f docker-compose.host-firebird.yml exec -T backend node prisma/seed.js
@@ -134,10 +144,6 @@ else
   docker compose exec -T backend npx prisma migrate deploy
   docker compose exec -T backend node prisma/seed.js
 fi
-
-systemctl daemon-reload
-systemctl enable --now tronsoftos.service
-systemctl enable --now tronsoftos-rclone-backup.timer
 
 echo "Instalacao concluida."
 echo "Edite $ENV_FILE e $APP_DIR/apps/tronfire/.env conforme o cliente."

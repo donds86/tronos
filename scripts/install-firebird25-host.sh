@@ -59,9 +59,19 @@ configure_sysdba_password() {
   local pass_file="/usr/local/firebird/SYSDBA.password"
   local parsed_password=""
   local candidates=()
+  local gsec_env="LD_LIBRARY_PATH=/usr/local/firebird/lib:${LD_LIBRARY_PATH:-}"
 
   if [ -f "$pass_file" ]; then
-    parsed_password="$(awk -F= '/ISC_PASSWORD/ {gsub(/[" \r]/, "", $2); print $2; exit}' "$pass_file" 2>/dev/null || true)"
+    parsed_password="$(awk -F= '
+      /ISC_PASSWORD|PASSWORD|Password|password/ {
+        value=$2
+        if (value == "") value=$0
+        gsub(/.*[:=][[:space:]]*/, "", value)
+        gsub(/["'\'' \r]/, "", value)
+        print value
+        exit
+      }
+    ' "$pass_file" 2>/dev/null || true)"
   fi
 
   [ -n "$parsed_password" ] && candidates+=("$parsed_password")
@@ -69,10 +79,12 @@ configure_sysdba_password() {
 
   for current_password in "${candidates[@]}"; do
     [ -n "$current_password" ] || continue
-    if printf 'display sysdba\nquit\n' | /usr/local/firebird/bin/gsec -user sysdba -password "$current_password" >/tmp/tronsoftos-gsec.log 2>&1; then
+    if printf 'display sysdba\nquit\n' | env "$gsec_env" /usr/local/firebird/bin/gsec -user sysdba -password "$current_password" >/tmp/tronsoftos-gsec.log 2>&1; then
       if [ "$current_password" != "$desired_password" ]; then
-        printf 'modify sysdba -pw %s\nquit\n' "$desired_password" | /usr/local/firebird/bin/gsec -user sysdba -password "$current_password" >/tmp/tronsoftos-gsec.log 2>&1
+        printf 'modify sysdba -pw %s\nquit\n' "$desired_password" | env "$gsec_env" /usr/local/firebird/bin/gsec -user sysdba -password "$current_password" >/tmp/tronsoftos-gsec.log 2>&1
       fi
+      printf 'ISC_USER=sysdba\nISC_PASSWORD=%s\n' "$desired_password" > "$pass_file"
+      chmod 600 "$pass_file"
       echo "Senha SYSDBA do Firebird host sincronizada."
       return 0
     fi
