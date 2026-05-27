@@ -232,20 +232,23 @@ const nodeTypes = { service: ServiceNode };
 
 function Topology({ dashboard }) {
   const cluster = dashboard.cluster;
+  const tronfire = dashboard.apps.find(app => app.name === 'tronfire');
   const nodes = [
     { id: 'cloudflare', type: 'service', position: { x: 20, y: 40 }, data: { label: 'Cloudflare', detail: dashboard.cloudflare.recordName || 'DNS/Tunnel' } },
     { id: 'vip', type: 'service', position: { x: 250, y: 40 }, data: { label: 'VIP', detail: cluster.vip || 'nao configurado' } },
     { id: 'primary', type: 'service', position: { x: 480, y: 0 }, data: { label: cluster.nodeName || 'Servidor', detail: cluster.nodeRole || 'primary' } },
     { id: 'standby', type: 'service', position: { x: 480, y: 110 }, data: { label: 'Standby', detail: cluster.mode === 'ha' ? 'aguardando sync' : 'desativado' } },
-    { id: 'tronfire', type: 'service', position: { x: 720, y: 0 }, data: { label: 'TronFire', detail: dashboard.apps.find(app => app.name === 'tronfire')?.status || 'unknown' } },
-    { id: 'backup', type: 'service', position: { x: 720, y: 110 }, data: { label: 'Rclone', detail: dashboard.backups.rclone.remote || 'sem remote' } }
+    { id: 'firebird', type: 'service', position: { x: 700, y: 0 }, data: { label: 'Firebird Host', detail: '2.5.9 / porta 3050' } },
+    { id: 'tronfire', type: 'service', position: { x: 920, y: 0 }, data: { label: 'TronFire', detail: tronfire?.status || 'unknown' } },
+    { id: 'backup', type: 'service', position: { x: 920, y: 110 }, data: { label: 'Rclone', detail: dashboard.backups.rclone.remote || 'sem remote' } }
   ];
   const edges = [
     { id: 'e1', source: 'cloudflare', target: 'vip', animated: true },
     { id: 'e2', source: 'vip', target: 'primary' },
     { id: 'e3', source: 'primary', target: 'standby', animated: cluster.mode === 'ha' },
-    { id: 'e4', source: 'primary', target: 'tronfire' },
-    { id: 'e5', source: 'tronfire', target: 'backup', animated: !!dashboard.backups.rclone.remote }
+    { id: 'e4', source: 'primary', target: 'firebird' },
+    { id: 'e5', source: 'firebird', target: 'tronfire' },
+    { id: 'e6', source: 'tronfire', target: 'backup', animated: !!dashboard.backups.rclone.remote }
   ];
   return (
     <div className="h-72 rounded-lg border border-slate-200 bg-slate-50">
@@ -375,10 +378,20 @@ function DiagnosticsView() {
         <div className="space-y-5">
           <Card title="Acoes rapidas" icon={Zap}>
             <div className="grid gap-3">
-              <button disabled={busy} onClick={() => firebirdMutation.mutate('restart')} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50">
-                <RefreshCw className="h-4 w-4" />
-                Reiniciar Firebird host
-              </button>
+              <div className="grid grid-cols-3 gap-2">
+                <button disabled={busy} onClick={() => firebirdMutation.mutate('start')} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50">
+                  <Play className="h-4 w-4" />
+                  Iniciar
+                </button>
+                <button disabled={busy} onClick={() => firebirdMutation.mutate('restart')} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50">
+                  <RefreshCw className="h-4 w-4" />
+                  Reiniciar
+                </button>
+                <button disabled={busy} onClick={() => firebirdMutation.mutate('stop')} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50">
+                  <Square className="h-4 w-4" />
+                  Parar
+                </button>
+              </div>
               <button disabled={busy} onClick={() => tronfireMutation.mutate('restart')} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50">
                 <RefreshCw className="h-4 w-4" />
                 Reiniciar TronFire
@@ -582,8 +595,79 @@ function NetworkSettings() {
               Arquivos de configuracao atualizados. Reinicie TronSoftOS e TronFire para carregar o novo IP.
             </div>
           ) : null}
+          <div className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-800 md:col-span-2">
+            Reiniciar ou recriar containers pelo TronSoftOS nao remove os dados persistentes. Firebird e PostgreSQL ficam em /opt/tronfire-storage.
+          </div>
         </form>
       </div>
+    </Card>
+  );
+}
+
+function SmtpSettings() {
+  const queryClient = useQueryClient();
+  const smtpQuery = useQuery({ queryKey: ['smtp-settings'], queryFn: () => api('/api/settings/smtp') });
+  const smtp = smtpQuery.data || {};
+  const [form, setForm] = useState(null);
+  const values = form || {
+    enabled: smtp.enabled || false,
+    host: smtp.host || '',
+    port: smtp.port || 587,
+    secure: smtp.secure || false,
+    user: smtp.user || '',
+    password: '',
+    from: smtp.from || '',
+    to: smtp.to || '',
+    subjectPrefix: smtp.subjectPrefix || '[TronSoftOS]'
+  };
+  const mutation = useMutation({
+    mutationFn: payload => fetch('/api/settings/smtp', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(async response => {
+      if (!response.ok) throw new Error((await response.json()).error || `HTTP ${response.status}`);
+      return response.json();
+    }),
+    onSuccess: data => {
+      setForm({ ...data, password: '' });
+      queryClient.invalidateQueries({ queryKey: ['smtp-settings'] });
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+    }
+  });
+  const setValue = (key, value) => setForm(previous => ({ ...(previous || values), [key]: value }));
+
+  return (
+    <Card title="SMTP / alertas por email" icon={UploadCloud} action={smtp.passwordConfigured ? <StatusPill value="online" /> : <StatusPill value="warning" />}>
+      <form
+        className="grid gap-3 md:grid-cols-2"
+        onSubmit={event => {
+          event.preventDefault();
+          mutation.mutate(values);
+        }}
+      >
+        <div className="md:col-span-2">
+          <Checkbox label="Enviar alertas por email" checked={values.enabled} onChange={value => setValue('enabled', value)} />
+        </div>
+        <Field label="Servidor SMTP" value={values.host} onChange={value => setValue('host', value)} placeholder="smtp.exemplo.com.br" />
+        <Field label="Porta" type="number" value={String(values.port)} onChange={value => setValue('port', Number(value))} placeholder="587" />
+        <Field label="Usuario" value={values.user} onChange={value => setValue('user', value)} placeholder="alertas@cliente.com.br" />
+        <Field label={smtp.passwordConfigured ? 'Senha nova (opcional)' : 'Senha'} type="password" value={values.password} onChange={value => setValue('password', value)} placeholder={smtp.passwordConfigured ? 'mantem atual se vazio' : ''} />
+        <Field label="Remetente" value={values.from} onChange={value => setValue('from', value)} placeholder="TronSoftOS <alertas@cliente.com.br>" />
+        <Field label="Destinatarios" value={values.to} onChange={value => setValue('to', value)} placeholder="suporte@revenda.com.br, cliente@empresa.com.br" />
+        <Field label="Prefixo assunto" value={values.subjectPrefix} onChange={value => setValue('subjectPrefix', value)} placeholder="[TronSoftOS]" />
+        <div className="flex items-center pt-6">
+          <Checkbox label="SSL/TLS direto" checked={values.secure} onChange={value => setValue('secure', value)} />
+        </div>
+        <div className="flex items-center gap-3 md:col-span-2">
+          <button disabled={mutation.isPending} className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-950 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50">
+            <Save className="h-4 w-4" />
+            Salvar SMTP
+          </button>
+          {mutation.isSuccess ? <StatusPill value="online" /> : null}
+          {mutation.isError ? <span className="text-sm text-red-700">{mutation.error.message}</span> : null}
+        </div>
+      </form>
     </Card>
   );
 }
@@ -599,6 +683,7 @@ function SettingsView() {
         </div>
       </Card>
       <NetworkSettings />
+      <SmtpSettings />
       <Card title="Pareamento HA" icon={ShieldCheck}>
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>

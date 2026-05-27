@@ -15,6 +15,7 @@ const stateDir = process.env.TRONSOFTOS_STATE_DIR || path.join(appRoot, 'state')
 const clusterLockPath = process.env.TRONSOFTOS_CLUSTER_LOCK || path.join(stateDir, 'cluster-lock.json');
 const clusterSecretsPath = process.env.TRONSOFTOS_CLUSTER_SECRETS || path.join(stateDir, 'cluster-secrets.env');
 const eventLogPath = process.env.TRONSOFTOS_EVENT_LOG || path.join(stateDir, 'events.jsonl');
+const smtpSettingsPath = process.env.TRONSOFTOS_SMTP_SETTINGS || path.join(stateDir, 'smtp-settings.json');
 const frontendDist = process.env.TRONSOFTOS_FRONTEND_DIST || path.join(appRoot, 'frontend/dist');
 
 function json(reply, status, body) {
@@ -62,6 +63,54 @@ function readEvents(limit = 100) {
   } catch {
     return [];
   }
+}
+
+function publicSmtpSettings(settings) {
+  return {
+    enabled: settings.enabled === true,
+    host: settings.host || '',
+    port: settings.port || 587,
+    secure: settings.secure === true,
+    user: settings.user || '',
+    passwordConfigured: !!settings.password,
+    from: settings.from || '',
+    to: settings.to || '',
+    subjectPrefix: settings.subjectPrefix || '[TronSoftOS]'
+  };
+}
+
+function smtpSettings() {
+  return publicSmtpSettings(readJson(smtpSettingsPath, {}));
+}
+
+function normalizeSmtpSettings(body) {
+  const current = readJson(smtpSettingsPath, {});
+  const next = {
+    enabled: body.enabled === true,
+    host: String(body.host || '').trim(),
+    port: Number(body.port || 587),
+    secure: body.secure === true,
+    user: String(body.user || '').trim(),
+    password: body.password ? String(body.password) : current.password || '',
+    from: String(body.from || '').trim(),
+    to: String(body.to || '').trim(),
+    subjectPrefix: String(body.subjectPrefix || '[TronSoftOS]').trim()
+  };
+  if (next.enabled) {
+    if (!next.host) throw new Error('host SMTP nao informado');
+    if (!Number.isInteger(next.port) || next.port < 1 || next.port > 65535) throw new Error('porta SMTP invalida');
+    if (!next.from) throw new Error('remetente SMTP nao informado');
+    if (!next.to) throw new Error('destinatario SMTP nao informado');
+  }
+  return next;
+}
+
+function writeSmtpSettings(body) {
+  ensureStateDir();
+  const settings = normalizeSmtpSettings(body);
+  fs.writeFileSync(smtpSettingsPath, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
+  appendEvent('SMTP_SETTINGS_UPDATED', { enabled: settings.enabled, host: settings.host, port: settings.port, to: settings.to });
+  return publicSmtpSettings(settings);
 }
 
 function managedConfig() {
@@ -624,6 +673,8 @@ async function handleApi(req, reply, url) {
   if (req.method === 'GET' && url.pathname === '/api/cluster') return json(reply, 200, clusterStatus());
   if (req.method === 'GET' && url.pathname === '/api/backups') return json(reply, 200, backupStatus());
   if (req.method === 'GET' && url.pathname === '/api/cloudflare') return json(reply, 200, cloudflareStatus());
+  if (req.method === 'GET' && url.pathname === '/api/settings/smtp') return json(reply, 200, smtpSettings());
+  if (req.method === 'PATCH' && url.pathname === '/api/settings/smtp') return json(reply, 200, writeSmtpSettings(await readBody(req)));
   if (req.method === 'GET' && url.pathname === '/api/events') return json(reply, 200, { events: readEvents(Number(url.searchParams.get('limit') || 100)) });
   if (req.method === 'GET' && url.pathname === '/api/cluster/pairing-file') return exportPairingFile(reply);
   if (req.method === 'GET' && url.pathname === '/api/host/firebird') return json(reply, 200, await hostFirebirdStatus());
