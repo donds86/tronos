@@ -106,6 +106,10 @@ function firebirdCreateTarget(filePath) {
   return firebirdDbConnect(filePath);
 }
 
+function shellErrorText(err) {
+  return [err?.stdout, err?.stderr, err?.message].filter(Boolean).join('\n').trim() || String(err);
+}
+
 function isHaMode() {
   return deploymentMode === 'ha';
 }
@@ -948,31 +952,34 @@ app.post('/api/databases/:id/auto-maintenance', { preHandler: requireOperator },
       `safety=${shQuote(safetyCopyPath)}`,
       `repaired=${shQuote(repairedPath)}`,
       `log=${shQuote(logPath)}`,
+      'fail() { code="$1"; shift; echo "$*"; test -f "$log" && cat "$log"; exit "$code"; }',
       'mkdir -p /firebird/backups /firebird/restore-work /firebird/logs',
-      'test -f "$db_file"',
-      'rm -f "$raw_backup" "$backup" "$repaired"',
+      'test -f "$db_file" || fail 60 "Banco de origem nao encontrado: $db_file"',
+      'rm -f "$raw_backup" "$backup" "$repaired" || fail 61 "Nao foi possivel limpar arquivos temporarios da manutencao"',
       'echo "[1/7] Copia fisica de seguranca antes da manutencao" > "$log"',
-      'cp -p "$db_file" "$safety"',
+      'cp -p "$db_file" "$safety" || fail 62 "Nao foi possivel criar copia fisica de seguranca: $safety"',
       'echo "[2/7] Colocando banco em modo manutencao, quando suportado" >> "$log"',
       `${gfix} -shut -force 0 -user SYSDBA -password ${password} "$db" >> "$log" 2>&1 || true`,
       'echo "[3/7] Tentando corrigir paginas danificadas com gfix -mend" >> "$log"',
       `${gfix} -mend -full -user SYSDBA -password ${password} "$db" >> "$log" 2>&1 || true`,
       'echo "[4/7] Gerando backup logico com gbak -g" >> "$log"',
-      `${gbak} -b -g -v -user SYSDBA -password ${password} "$db" "$raw_backup" >> "$log" 2>&1`,
-      'gzip -f "$raw_backup"',
+      `${gbak} -b -g -v -user SYSDBA -password ${password} "$db" "$raw_backup" >> "$log" 2>&1 || fail 63 "Falha ao gerar backup logico de manutencao"`,
+      'gzip -f "$raw_backup" || fail 64 "Falha ao compactar backup de manutencao"',
       'echo "[5/7] Restaurando backup logico em arquivo temporario" >> "$log"',
       'restore_src="/tmp/tronfire_maintenance_${RANDOM}.gbk"',
-      'gzip -dc "$backup" > "$restore_src"',
-      `${gbak} -c -v -user SYSDBA -password ${password} "$restore_src" ${shQuote(firebirdCreateTarget(repairedPath))} >> "$log" 2>&1 || { cat "$log"; exit 66; }`,
+      'gzip -dc "$backup" > "$restore_src" || fail 65 "Falha ao descompactar backup de manutencao"',
+      `${gbak} -c -v -user SYSDBA -password ${password} "$restore_src" ${shQuote(firebirdCreateTarget(repairedPath))} >> "$log" 2>&1 || fail 66 "Falha ao restaurar banco reparado"`,
       'rm -f "$restore_src"',
-      'chmod 0666 "$repaired"',
+      'test -f "$repaired" || fail 67 "Restore terminou, mas banco reparado nao foi encontrado: $repaired"',
+      'chmod 0666 "$repaired" || fail 68 "Nao foi possivel ajustar permissao do banco reparado"',
       'echo "[6/7] Validando banco restaurado" >> "$log"',
-      `${gstat} -h "$repaired" >> "$log" 2>&1 || { cat "$log"; exit 67; }`,
+      `${gstat} -h "$repaired" >> "$log" 2>&1 || fail 69 "Falha ao validar banco reparado com gstat"`,
       'echo "[7/7] Substituindo banco original pelo restaurado validado" >> "$log"',
-      'mv "$repaired" "$db_file"',
-      'chmod 0666 "$db_file"',
+      `${gfix} -shut -force 0 -user SYSDBA -password ${password} "$db" >> "$log" 2>&1 || true`,
+      'mv -f "$repaired" "$db_file" || fail 70 "Nao foi possivel substituir banco original pelo reparado"',
+      'chmod 0666 "$db_file" || fail 71 "Nao foi possivel ajustar permissao do banco reparado final"',
       `${gfix} -online -user SYSDBA -password ${password} "$db" >> "$log" 2>&1 || true`,
-      `${gstat} -h "$db_file" >> "$log" 2>&1`
+      `${gstat} -h "$db_file" >> "$log" 2>&1 || fail 72 "Falha ao validar banco final com gstat"`
     ].join('; ');
     await dockerExec(['sh', '-lc', cmd], { timeout: 1000 * 60 * 60 * 4 });
     const { stdout: sizeOut } = await dockerExec(['stat', '-c', '%s', backupPath]);
@@ -1004,18 +1011,19 @@ app.post('/api/databases/:id/auto-maintenance', { preHandler: requireOperator },
       drive
     };
   } catch (err) {
+    const error = shellErrorText(err);
     await prisma.backupJob.update({
       where: { id: job.id },
-      data: { status: 'FAILED', finishedAt: new Date(), errorMessage: err.message }
+      data: { status: 'FAILED', finishedAt: new Date(), errorMessage: error }
     });
     await prisma.managedDatabase.update({ where: { id: db.id }, data: { status: 'ERROR', lastCheckAt: new Date() } });
     await createAlertOnce(`DATABASE_AUTO_MAINTENANCE_FAILED_${db.alias}`, 'CRITICAL', `Manutencao automatica falhou: ${db.name}`);
     await audit(req, 'DATABASE_AUTO_MAINTENANCE_FAILED', {
       entityType: 'database',
       entityId: db.id,
-      details: { backupPath, safetyCopyPath, repairedPath, logPath, error: err.message }
+      details: { backupPath, safetyCopyPath, repairedPath, logPath, error }
     });
-    return reply.code(500).send({ error: err.message, backupPath, safetyCopyPath, logPath });
+    return reply.code(500).send({ error, backupPath, safetyCopyPath, logPath });
   }
 });
 
@@ -1148,20 +1156,25 @@ app.post('/api/restores/from-upload', { preHandler: requireOperator }, async (re
       `src=${shQuote(sourcePath)}`,
       `temp_dest=${shQuote(tempRestorePath)}`,
       `target=${shQuote(targetDb.filePath)}`,
+      `target_conn=${shQuote(firebirdDbConnect(targetDb.filePath))}`,
       `current_backup=${shQuote(currentBackupPath)}`,
       `log=${shQuote(logPath)}`,
-      'test -f "$src"',
-      'rm -f "$temp_dest"',
+      'fail() { code="$1"; shift; echo "$*"; test -f "$log" && cat "$log"; exit "$code"; }',
+      'test -f "$src" || fail 60 "Arquivo de origem nao encontrado: $src"',
+      'rm -f "$temp_dest" || fail 61 "Nao foi possivel remover restore temporario anterior: $temp_dest"',
       'restore_src="$src"',
-      'case "$src" in *.gz) restore_src="/tmp/tronfire_restore_${RANDOM}.gbk"; gzip -dc "$src" > "$restore_src" ;; esac',
-      `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gbak`)} -c -v -user SYSDBA -password ${shQuote(process.env.FIREBIRD_PASSWORD || 'masterkey')} "$restore_src" ${shQuote(firebirdCreateTarget(tempRestorePath))} > "$log" 2>&1 || { cat "$log"; exit 66; }`,
-      'if [ "$restore_src" != "$src" ]; then rm -f "$restore_src"; fi',
-      'chmod 0666 "$temp_dest"',
-      `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gstat`)} -h "$temp_dest" >> "$log" 2>&1 || { cat "$log"; exit 67; }`,
-      'test -f "$target" && cp "$target" "$current_backup"',
-      'mv "$temp_dest" "$target"',
-      'chmod 0666 "$target"',
-      `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gstat`)} -h "$target" >> "$log" 2>&1`
+      'case "$src" in *.gz) restore_src="/tmp/tronfire_restore_${RANDOM}.gbk"; gzip -dc "$src" > "$restore_src" || fail 62 "Falha ao descompactar backup: $src" ;; esac',
+      `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gbak`)} -c -v -user SYSDBA -password ${shQuote(process.env.FIREBIRD_PASSWORD || 'masterkey')} "$restore_src" ${shQuote(firebirdCreateTarget(tempRestorePath))} > "$log" 2>&1 || fail 66 "Falha no gbak restore"`,
+      'if [ "$restore_src" != "$src" ]; then rm -f "$restore_src" || true; fi',
+      'test -f "$temp_dest" || fail 63 "Restore terminou, mas o arquivo temporario nao foi encontrado: $temp_dest"',
+      'chmod 0666 "$temp_dest" || fail 64 "Nao foi possivel ajustar permissao do banco restaurado: $temp_dest"',
+      `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gstat`)} -h "$temp_dest" >> "$log" 2>&1 || fail 67 "Falha ao validar banco restaurado com gstat"`,
+      `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gfix`)} -shut -force 0 -user SYSDBA -password ${shQuote(process.env.FIREBIRD_PASSWORD || 'masterkey')} "$target_conn" >> "$log" 2>&1 || true`,
+      'if [ -f "$target" ]; then cp -p "$target" "$current_backup" || fail 68 "Nao foi possivel criar copia de seguranca atual: $current_backup"; fi',
+      'mv -f "$temp_dest" "$target" || fail 69 "Nao foi possivel substituir banco de destino: $target"',
+      'chmod 0666 "$target" || fail 70 "Nao foi possivel ajustar permissao do banco final: $target"',
+      `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gfix`)} -online -user SYSDBA -password ${shQuote(process.env.FIREBIRD_PASSWORD || 'masterkey')} "$target_conn" >> "$log" 2>&1 || true`,
+      `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gstat`)} -h "$target" >> "$log" 2>&1 || fail 71 "Falha ao validar banco final com gstat"`
     ].join('; ');
     await dockerExec(['sh', '-lc', cmd], { timeout: 1000 * 60 * 60 * 4 });
     const db = await prisma.managedDatabase.update({
@@ -1175,9 +1188,10 @@ app.post('/api/restores/from-upload', { preHandler: requireOperator }, async (re
     await audit(req, 'RESTORE_FINISHED', { entityType: 'database', entityId: db.id, details: { targetDatabaseId: targetDb.id, sourcePath, targetPath: targetDb.filePath, currentBackupPath, logPath } });
     return reply.code(200).send({ ok: true, database: db, sourcePath, targetPath: targetDb.filePath, currentBackupPath, logPath });
   } catch (err) {
+    const error = shellErrorText(err);
     await prisma.alert.create({ data: { type: 'RESTORE_FAILED', severity: 'CRITICAL', message: `Restore falhou: ${targetDb.name}` } });
-    await audit(req, 'RESTORE_FAILED', { entityType: 'database', entityId: targetDb.id, details: { sourcePath, targetPath: targetDb.filePath, tempRestorePath, logPath, error: err.message } });
-    return reply.code(500).send({ error: err.message, logPath });
+    await audit(req, 'RESTORE_FAILED', { entityType: 'database', entityId: targetDb.id, details: { sourcePath, targetPath: targetDb.filePath, tempRestorePath, logPath, error } });
+    return reply.code(500).send({ error, logPath });
   } finally {
     await lockHandle.release();
   }
@@ -1241,18 +1255,20 @@ app.post('/api/ha/standby/restore', async (req, reply) => {
       `temp_dest=${shQuote(tempRestorePath)}`,
       `standby=${shQuote(standbyPath)}`,
       `log=${shQuote(logPath)}`,
-      'mkdir -p /firebird/standby /firebird/restore-work /firebird/logs',
-      'test -f "$src"',
-      'rm -f "$temp_dest"',
+      'fail() { code="$1"; shift; echo "$*"; test -f "$log" && cat "$log"; exit "$code"; }',
+      'mkdir -p /firebird/standby /firebird/restore-work /firebird/logs || fail 60 "Nao foi possivel criar diretorios de standby"',
+      'test -f "$src" || fail 61 "Arquivo de backup recebido nao encontrado: $src"',
+      'rm -f "$temp_dest" || fail 62 "Nao foi possivel remover restore standby temporario anterior: $temp_dest"',
       'restore_src="$src"',
-      'case "$src" in *.gz) restore_src="/tmp/tronfire_standby_restore_${RANDOM}.gbk"; gzip -dc "$src" > "$restore_src" ;; esac',
-      `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gbak`)} -c -v -user SYSDBA -password ${shQuote(process.env.FIREBIRD_PASSWORD || 'masterkey')} "$restore_src" ${shQuote(firebirdCreateTarget(tempRestorePath))} > "$log" 2>&1 || { cat "$log"; exit 66; }`,
-      'if [ "$restore_src" != "$src" ]; then rm -f "$restore_src"; fi',
-      'chmod 0666 "$temp_dest"',
-      `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gstat`)} -h "$temp_dest" >> "$log" 2>&1 || { cat "$log"; exit 67; }`,
-      'mv "$temp_dest" "$standby"',
-      'chmod 0666 "$standby"',
-      `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gstat`)} -h "$standby" >> "$log" 2>&1`
+      'case "$src" in *.gz) restore_src="/tmp/tronfire_standby_restore_${RANDOM}.gbk"; gzip -dc "$src" > "$restore_src" || fail 63 "Falha ao descompactar backup standby: $src" ;; esac',
+      `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gbak`)} -c -v -user SYSDBA -password ${shQuote(process.env.FIREBIRD_PASSWORD || 'masterkey')} "$restore_src" ${shQuote(firebirdCreateTarget(tempRestorePath))} > "$log" 2>&1 || fail 66 "Falha no gbak restore standby"`,
+      'if [ "$restore_src" != "$src" ]; then rm -f "$restore_src" || true; fi',
+      'test -f "$temp_dest" || fail 64 "Restore standby terminou, mas arquivo temporario nao foi encontrado: $temp_dest"',
+      'chmod 0666 "$temp_dest" || fail 65 "Nao foi possivel ajustar permissao do standby temporario"',
+      `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gstat`)} -h "$temp_dest" >> "$log" 2>&1 || fail 67 "Falha ao validar standby restaurado com gstat"`,
+      'mv -f "$temp_dest" "$standby" || fail 68 "Nao foi possivel substituir banco standby: $standby"',
+      'chmod 0666 "$standby" || fail 69 "Nao foi possivel ajustar permissao do standby final"',
+      `${shQuote(`${process.env.FIREBIRD_BIN || '/usr/local/firebird/bin'}/gstat`)} -h "$standby" >> "$log" 2>&1 || fail 70 "Falha ao validar standby final com gstat"`
     ].join('; ');
     await dockerExec(['sh', '-lc', cmd], { timeout: 1000 * 60 * 60 * 4 });
     const sha = manifest?.backupSha256 || null;
@@ -1269,9 +1285,10 @@ app.post('/api/ha/standby/restore', async (req, reply) => {
     await audit(req, 'HA_STANDBY_RESTORED', { entityType: 'database', entityId: db.id, details: { sourcePath, manifestPath: body.manifestPath || null, standbyPath, logPath } });
     return { ok: true, database: updated, standbyPath, logPath };
   } catch (err) {
+    const error = shellErrorText(err);
     await prisma.managedDatabase.update({ where: { id: db.id }, data: { standbyStatus: 'INVALID' } });
-    await audit(req, 'HA_STANDBY_RESTORE_FAILED', { entityType: 'database', entityId: db.id, details: { sourcePath, standbyPath, logPath, error: err.message } });
-    return reply.code(500).send({ error: err.message, logPath });
+    await audit(req, 'HA_STANDBY_RESTORE_FAILED', { entityType: 'database', entityId: db.id, details: { sourcePath, standbyPath, logPath, error } });
+    return reply.code(500).send({ error, logPath });
   }
 });
 
