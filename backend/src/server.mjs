@@ -1,6 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -17,6 +18,7 @@ const clusterSecretsPath = process.env.TRONSOFTOS_CLUSTER_SECRETS || path.join(s
 const eventLogPath = process.env.TRONSOFTOS_EVENT_LOG || path.join(stateDir, 'events.jsonl');
 const smtpSettingsPath = process.env.TRONSOFTOS_SMTP_SETTINGS || path.join(stateDir, 'smtp-settings.json');
 const rcloneSettingsPath = process.env.TRONSOFTOS_RCLONE_SETTINGS || path.join(stateDir, 'rclone-settings.json');
+const googleOauthDir = process.env.TRONSOFTOS_GOOGLE_OAUTH_DIR || path.join(stateDir, 'google-oauth');
 const frontendDist = process.env.TRONSOFTOS_FRONTEND_DIST || path.join(appRoot, 'frontend/dist');
 
 function json(reply, status, body) {
@@ -169,6 +171,164 @@ function writeRcloneSettings(body) {
   fs.writeFileSync(rcloneSettingsPath, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
   appendEvent('RCLONE_SETTINGS_UPDATED', { enabled: settings.enabled, remote: settings.remote, path: settings.path, uploadOnlyRole: settings.uploadOnlyRole });
   return publicRcloneSettings(settings);
+}
+
+function requestBaseUrl(req) {
+  const proto = req.headers['x-forwarded-proto'] || 'http';
+  const host = req.headers['x-forwarded-host'] || req.headers.host || `127.0.0.1:${port}`;
+  return `${String(proto).split(',')[0]}://${String(host).split(',')[0]}`;
+}
+
+function googleOauthStatePath(state) {
+  return path.join(googleOauthDir, `${state}.json`);
+}
+
+function normalizeRemoteName(value) {
+  const remote = String(value || 'gdrive').trim();
+  if (!/^[A-Za-z0-9_-]{2,40}$/.test(remote)) throw new Error('remote deve usar apenas letras, numeros, _ ou -');
+  return remote;
+}
+
+function normalizeGoogleOauthInput(body, req) {
+  const clientId = String(body.clientId || process.env.GOOGLE_DRIVE_CLIENT_ID || '').trim();
+  const clientSecret = String(body.clientSecret || process.env.GOOGLE_DRIVE_CLIENT_SECRET || '').trim();
+  if (!clientId || !clientSecret) throw new Error('informe client_id e client_secret do OAuth Google para usar o assistente');
+  const settings = rawRcloneSettings();
+  const remote = normalizeRemoteName(body.remote || settings.remote || 'gdrive');
+  const redirectUri = String(body.redirectUri || `${requestBaseUrl(req)}/api/backups/google/callback`).trim();
+  if (!/^https?:\/\//i.test(redirectUri)) throw new Error('redirect URI invalido');
+  return {
+    clientId,
+    clientSecret,
+    remote,
+    redirectUri,
+    config: String(body.config || settings.config || defaultRcloneConfigPath()).trim(),
+    path: String(body.path || settings.path || 'tronsoftos/backups').trim(),
+    uploadOnlyRole: String(body.uploadOnlyRole || settings.uploadOnlyRole || 'primary').trim()
+  };
+}
+
+function googleDriveRcloneConfig({ remote, clientId, clientSecret, token }) {
+  const safeToken = JSON.stringify(token);
+  const lines = [
+    `[${remote}]`,
+    'type = drive',
+    'scope = drive',
+  ];
+  if (clientId) lines.push(`client_id = ${clientId}`);
+  if (clientSecret) lines.push(`client_secret = ${clientSecret}`);
+  lines.push(`token = ${safeToken}`, '');
+  return lines.join('\n');
+}
+
+function html(reply, status, body) {
+  reply.writeHead(status, {
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'no-store'
+  });
+  reply.end(body);
+}
+
+function startGoogleDriveOauth(req, body) {
+  const input = normalizeGoogleOauthInput(body, req);
+  if (!['primary', 'standby', 'recovery', 'any'].includes(input.uploadOnlyRole)) throw new Error('role de upload invalida');
+  ensureStateDir();
+  fs.mkdirSync(googleOauthDir, { recursive: true });
+  const state = crypto.randomUUID();
+  fs.writeFileSync(googleOauthStatePath(state), `${JSON.stringify(input, null, 2)}\n`, { mode: 0o600 });
+  const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  authUrl.searchParams.set('client_id', input.clientId);
+  authUrl.searchParams.set('redirect_uri', input.redirectUri);
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('scope', 'https://www.googleapis.com/auth/drive');
+  authUrl.searchParams.set('access_type', 'offline');
+  authUrl.searchParams.set('prompt', 'consent');
+  authUrl.searchParams.set('state', state);
+  appendEvent('GOOGLE_DRIVE_OAUTH_STARTED', { remote: input.remote, path: input.path });
+  return { authUrl: authUrl.toString(), redirectUri: input.redirectUri, remote: input.remote };
+}
+
+function saveGoogleDriveToken(body) {
+  const settings = rawRcloneSettings();
+  const remote = normalizeRemoteName(body.remote || settings.remote || 'gdrive');
+  const rawToken = String(body.token || '').trim();
+  if (!rawToken) throw new Error('token OAuth nao informado');
+  let token;
+  try {
+    token = JSON.parse(rawToken);
+  } catch {
+    throw new Error('token OAuth deve estar em JSON');
+  }
+  if (!token.access_token && !token.refresh_token) throw new Error('token OAuth invalido');
+  const configContent = googleDriveRcloneConfig({
+    remote,
+    clientId: String(body.clientId || '').trim(),
+    clientSecret: String(body.clientSecret || '').trim(),
+    token
+  });
+  const result = writeRcloneSettings({
+    enabled: true,
+    bin: body.bin || settings.bin || '/usr/bin/rclone',
+    config: body.config || settings.config || defaultRcloneConfigPath(),
+    remote,
+    path: body.path || settings.path || 'tronsoftos/backups',
+    uploadOnlyRole: body.uploadOnlyRole || settings.uploadOnlyRole || 'primary',
+    configContent
+  });
+  appendEvent('GOOGLE_DRIVE_TOKEN_IMPORTED', { remote, path: result.path });
+  return result;
+}
+
+async function completeGoogleDriveOauth(reply, url) {
+  const state = String(url.searchParams.get('state') || '');
+  const code = String(url.searchParams.get('code') || '');
+  const error = String(url.searchParams.get('error') || '');
+  if (error) return html(reply, 400, `<h1>Falha no Google Drive</h1><p>${error}</p>`);
+  if (!state || !code) return html(reply, 400, '<h1>Falha no Google Drive</h1><p>Retorno OAuth incompleto.</p>');
+  const statePath = googleOauthStatePath(state);
+  const input = readJson(statePath, null);
+  if (!input) return html(reply, 400, '<h1>Falha no Google Drive</h1><p>Sessao OAuth expirada ou invalida.</p>');
+
+  const response = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      code,
+      client_id: input.clientId,
+      client_secret: input.clientSecret,
+      redirect_uri: input.redirectUri,
+      grant_type: 'authorization_code'
+    })
+  });
+  const tokenResponse = await response.json();
+  if (!response.ok) {
+    return html(reply, 400, `<h1>Falha no Google Drive</h1><pre>${String(tokenResponse.error_description || tokenResponse.error || 'erro OAuth')}</pre>`);
+  }
+
+  const token = {
+    access_token: tokenResponse.access_token,
+    token_type: tokenResponse.token_type || 'Bearer',
+    refresh_token: tokenResponse.refresh_token,
+    expiry: new Date(Date.now() + Number(tokenResponse.expires_in || 3600) * 1000).toISOString()
+  };
+  const configContent = googleDriveRcloneConfig({
+    remote: input.remote,
+    clientId: input.clientId,
+    clientSecret: input.clientSecret,
+    token
+  });
+  writeRcloneSettings({
+    enabled: true,
+    bin: rawRcloneSettings().bin || '/usr/bin/rclone',
+    config: input.config,
+    remote: input.remote,
+    path: input.path,
+    uploadOnlyRole: input.uploadOnlyRole,
+    configContent
+  });
+  fs.rmSync(statePath, { force: true });
+  appendEvent('GOOGLE_DRIVE_OAUTH_CONNECTED', { remote: input.remote, path: input.path });
+  return html(reply, 200, '<h1>Google Drive conectado</h1><p>Voce ja pode fechar esta aba e voltar para o TronSoftOS.</p>');
 }
 
 function rcloneTarget(settings) {
@@ -765,6 +925,9 @@ async function handleApi(req, reply, url) {
   if (req.method === 'PATCH' && url.pathname === '/api/backups/rclone') return json(reply, 200, writeRcloneSettings(await readBody(req)));
   if (req.method === 'POST' && url.pathname === '/api/backups/rclone/test') return json(reply, 200, await rcloneTest());
   if (req.method === 'POST' && url.pathname === '/api/backups/rclone/upload-test') return json(reply, 200, await rcloneUploadTest());
+  if (req.method === 'POST' && url.pathname === '/api/backups/rclone/token') return json(reply, 200, saveGoogleDriveToken(await readBody(req)));
+  if (req.method === 'POST' && url.pathname === '/api/backups/google/start') return json(reply, 200, startGoogleDriveOauth(req, await readBody(req)));
+  if (req.method === 'GET' && url.pathname === '/api/backups/google/callback') return await completeGoogleDriveOauth(reply, url);
   if (req.method === 'GET' && url.pathname === '/api/cloudflare') return json(reply, 200, cloudflareStatus());
   if (req.method === 'GET' && url.pathname === '/api/settings/smtp') return json(reply, 200, smtpSettings());
   if (req.method === 'PATCH' && url.pathname === '/api/settings/smtp') return json(reply, 200, writeSmtpSettings(await readBody(req)));

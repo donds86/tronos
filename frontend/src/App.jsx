@@ -121,7 +121,10 @@ async function postApi(path, body = {}) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body)
   });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || `HTTP ${response.status}`);
+  }
   return response.json();
 }
 
@@ -458,6 +461,8 @@ function BackupsView({ dashboard }) {
   const files = dashboard.backups.recentFiles || [];
   const rclone = rcloneQuery.data || dashboard.backups.rclone || {};
   const [form, setForm] = useState(null);
+  const [oauth, setOauth] = useState({ clientId: '', clientSecret: '', redirectUri: '' });
+  const [token, setToken] = useState('');
   const values = form || {
     enabled: rclone.enabled || false,
     bin: rclone.bin || '/usr/bin/rclone',
@@ -485,11 +490,74 @@ function BackupsView({ dashboard }) {
   });
   const testMutation = useMutation({ mutationFn: () => postApi('/api/backups/rclone/test') });
   const uploadTestMutation = useMutation({ mutationFn: () => postApi('/api/backups/rclone/upload-test') });
+  const googleMutation = useMutation({
+    mutationFn: payload => postApi('/api/backups/google/start', payload),
+    onSuccess: data => {
+      window.open(data.authUrl, '_blank', 'noopener,noreferrer');
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+    }
+  });
+  const tokenMutation = useMutation({
+    mutationFn: payload => postApi('/api/backups/rclone/token', payload),
+    onSuccess: data => {
+      setForm({ ...data, configContent: '' });
+      setToken('');
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['rclone-settings'] });
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+    }
+  });
   const setValue = (key, value) => setForm(previous => ({ ...(previous || values), [key]: value }));
+  const setOauthValue = (key, value) => setOauth(previous => ({ ...previous, [key]: value }));
 
   return (
     <div className="grid gap-5 xl:grid-cols-[1fr_1fr]">
       <Card title="Google Drive / Rclone" icon={UploadCloud} action={<StatusPill value={rclone.configConfigured ? 'online' : 'warning'} />}>
+        <div className="mb-4 rounded-md border border-slate-200 bg-slate-50 p-3">
+          <div className="grid gap-3 md:grid-cols-2">
+            <Field label="Google Client ID" value={oauth.clientId} onChange={value => setOauthValue('clientId', value)} placeholder="client_id do OAuth" />
+            <Field label="Google Client Secret" type="password" value={oauth.clientSecret} onChange={value => setOauthValue('clientSecret', value)} placeholder="client_secret do OAuth" />
+            <Field label="URL de retorno" value={oauth.redirectUri} onChange={value => setOauthValue('redirectUri', value)} placeholder={`${window.location.origin}/api/backups/google/callback`} />
+            <div className="flex items-end">
+              <button
+                type="button"
+                disabled={googleMutation.isPending}
+                onClick={() => googleMutation.mutate({ ...values, ...oauth })}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-sky-600 px-3 py-2 text-sm font-medium text-white hover:bg-sky-700 disabled:opacity-50"
+              >
+                <Cloud className="h-4 w-4" />
+                Conectar Google Drive
+              </button>
+            </div>
+          </div>
+          {googleMutation.isSuccess ? <div className="mt-3 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">Autorizacao aberta em nova aba.</div> : null}
+          {googleMutation.isError ? <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{googleMutation.error?.message}</div> : null}
+        </div>
+        <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-3">
+          <label className="block">
+            <span className="text-xs font-medium uppercase text-amber-700">Token OAuth gerado</span>
+            <textarea
+              value={token}
+              onChange={event => setToken(event.target.value)}
+              placeholder='{"access_token":"...","refresh_token":"...","expiry":"..."}'
+              className="mt-1 h-24 w-full rounded-md border border-amber-200 px-3 py-2 font-mono text-xs outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+            />
+          </label>
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              disabled={tokenMutation.isPending}
+              onClick={() => tokenMutation.mutate({ ...values, ...oauth, token })}
+              className="inline-flex items-center justify-center gap-2 rounded-md bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+            >
+              <Save className="h-4 w-4" />
+              Adicionar token
+            </button>
+            <a className="text-sm font-medium text-amber-800 hover:underline" href="https://rclone.org/commands/rclone_authorize/" target="_blank" rel="noreferrer">Abrir guia de geracao do token</a>
+          </div>
+          {tokenMutation.isSuccess ? <div className="mt-3 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">Token salvo e rclone.conf gerado.</div> : null}
+          {tokenMutation.isError ? <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{tokenMutation.error?.message}</div> : null}
+        </div>
         <form
           className="grid gap-3 md:grid-cols-2"
           onSubmit={event => {
