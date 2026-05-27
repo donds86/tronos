@@ -595,8 +595,8 @@ async function databases() {
     <div class="card mb-3"><div class="card-body">
       <h3>Criar banco</h3>
       <div class="row g-2">
-        <div class="col-md"><input id="dbName" class="form-control" placeholder="Producao 2026"></div>
-        <div class="col-md"><input id="dbAlias" class="form-control" placeholder="empresa_prod"></div>
+        <div class="col-md"><input id="dbName" class="form-control" placeholder="Nome do cliente"></div>
+        <div class="col-md"><input id="dbAlias" class="form-control" placeholder="ERP_TRONSOFT"></div>
         <div class="col-md"><select id="dbType" class="form-select"><option value="PRODUCAO">Producao</option><option value="LEGADO_CONSULTA">Legado/Consulta</option><option value="HOMOLOGACAO">Homologacao</option></select></div>
         <div class="col-auto"><button id="btnAddDb" class="btn btn-primary">Criar</button></div>
         <div class="col-12"><div id="dbError" class="text-danger small mt-2"></div></div>
