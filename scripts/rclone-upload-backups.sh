@@ -3,15 +3,45 @@ set -euo pipefail
 
 RCLONE_BIN="${RCLONE_BIN:-/usr/bin/rclone}"
 RCLONE_CONFIG="${RCLONE_CONFIG:-/opt/tronsoftos/config/rclone/rclone.conf}"
-RCLONE_REMOTE="${RCLONE_REMOTE:?missing RCLONE_REMOTE}"
+RCLONE_REMOTE="${RCLONE_REMOTE:-}"
 RCLONE_BACKUP_PATH="${RCLONE_BACKUP_PATH:-tronsoftos/backups}"
 FIREBIRD_BACKUP_DIR="${FIREBIRD_BACKUP_DIR:-/opt/tronfire-storage/firebird/backups}"
 NODE_ROLE="${TRONFIRE_NODE_ROLE:-${TRONSOFTOS_NODE_ROLE:-primary}}"
 UPLOAD_ONLY_ROLE="${RCLONE_UPLOAD_ONLY_ROLE:-primary}"
 LOG_DIR="${TRONSOFTOS_LOG_DIR:-/opt/tronsoftos/logs}/rclone"
+RCLONE_SETTINGS="${TRONSOFTOS_RCLONE_SETTINGS:-${TRONSOFTOS_STATE_DIR:-/opt/tronsoftos/state}/rclone-settings.json}"
 
-if [ "$NODE_ROLE" != "$UPLOAD_ONLY_ROLE" ]; then
+if [ -f "$RCLONE_SETTINGS" ] && command -v node >/dev/null 2>&1; then
+  eval "$(node - "$RCLONE_SETTINGS" <<'NODE'
+const fs = require('fs');
+const settings = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const q = value => `'${String(value ?? '').replace(/'/g, `'\\''`)}'`;
+if (settings.enabled !== true) console.log('RCLONE_DISABLED=true');
+for (const [env, key] of [
+  ['RCLONE_BIN', 'bin'],
+  ['RCLONE_CONFIG', 'config'],
+  ['RCLONE_REMOTE', 'remote'],
+  ['RCLONE_BACKUP_PATH', 'path'],
+  ['UPLOAD_ONLY_ROLE', 'uploadOnlyRole']
+]) {
+  if (settings[key]) console.log(`${env}=${q(settings[key])}`);
+}
+NODE
+)"
+fi
+
+if [ "${RCLONE_DISABLED:-false}" = "true" ]; then
+  echo "rclone upload ignorado: configuracao desabilitada"
+  exit 0
+fi
+
+if [ "$UPLOAD_ONLY_ROLE" != "any" ] && [ "$NODE_ROLE" != "$UPLOAD_ONLY_ROLE" ]; then
   echo "rclone upload ignorado: role atual $NODE_ROLE, role exigido $UPLOAD_ONLY_ROLE"
+  exit 0
+fi
+
+if [ -z "${RCLONE_REMOTE:-}" ]; then
+  echo "rclone upload ignorado: remote nao configurado"
   exit 0
 fi
 

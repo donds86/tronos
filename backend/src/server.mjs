@@ -16,6 +16,7 @@ const clusterLockPath = process.env.TRONSOFTOS_CLUSTER_LOCK || path.join(stateDi
 const clusterSecretsPath = process.env.TRONSOFTOS_CLUSTER_SECRETS || path.join(stateDir, 'cluster-secrets.env');
 const eventLogPath = process.env.TRONSOFTOS_EVENT_LOG || path.join(stateDir, 'events.jsonl');
 const smtpSettingsPath = process.env.TRONSOFTOS_SMTP_SETTINGS || path.join(stateDir, 'smtp-settings.json');
+const rcloneSettingsPath = process.env.TRONSOFTOS_RCLONE_SETTINGS || path.join(stateDir, 'rclone-settings.json');
 const frontendDist = process.env.TRONSOFTOS_FRONTEND_DIST || path.join(appRoot, 'frontend/dist');
 
 function json(reply, status, body) {
@@ -111,6 +112,99 @@ function writeSmtpSettings(body) {
   fs.writeFileSync(smtpSettingsPath, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
   appendEvent('SMTP_SETTINGS_UPDATED', { enabled: settings.enabled, host: settings.host, port: settings.port, to: settings.to });
   return publicSmtpSettings(settings);
+}
+
+function defaultRcloneConfigPath() {
+  return process.env.RCLONE_CONFIG || path.join(appRoot, 'config/rclone/rclone.conf');
+}
+
+function rawRcloneSettings() {
+  return {
+    enabled: false,
+    bin: process.env.RCLONE_BIN || '/usr/bin/rclone',
+    config: defaultRcloneConfigPath(),
+    remote: process.env.RCLONE_REMOTE || '',
+    path: process.env.RCLONE_BACKUP_PATH || 'tronsoftos/backups',
+    uploadOnlyRole: process.env.RCLONE_UPLOAD_ONLY_ROLE || 'primary',
+    ...readJson(rcloneSettingsPath, {})
+  };
+}
+
+function publicRcloneSettings(settings = rawRcloneSettings()) {
+  return {
+    enabled: settings.enabled === true,
+    bin: settings.bin || '/usr/bin/rclone',
+    config: settings.config || defaultRcloneConfigPath(),
+    configConfigured: fs.existsSync(settings.config || defaultRcloneConfigPath()),
+    remote: settings.remote || '',
+    path: settings.path || 'tronsoftos/backups',
+    uploadOnlyRole: settings.uploadOnlyRole || 'primary'
+  };
+}
+
+function normalizeRcloneSettings(body) {
+  const current = rawRcloneSettings();
+  const next = {
+    enabled: body.enabled === true,
+    bin: String(body.bin || current.bin || '/usr/bin/rclone').trim(),
+    config: String(body.config || current.config || defaultRcloneConfigPath()).trim(),
+    remote: String(body.remote || '').trim(),
+    path: String(body.path || '').trim() || 'tronsoftos/backups',
+    uploadOnlyRole: String(body.uploadOnlyRole || 'primary').trim()
+  };
+  if (!next.bin.startsWith('/')) throw new Error('caminho do rclone deve ser absoluto');
+  if (!next.config.startsWith('/')) throw new Error('caminho do rclone.conf deve ser absoluto');
+  if (next.enabled && !next.remote) throw new Error('remote rclone nao informado');
+  if (!['primary', 'standby', 'recovery', 'any'].includes(next.uploadOnlyRole)) throw new Error('role de upload invalida');
+  return next;
+}
+
+function writeRcloneSettings(body) {
+  ensureStateDir();
+  const settings = normalizeRcloneSettings(body);
+  if (typeof body.configContent === 'string' && body.configContent.trim()) {
+    fs.mkdirSync(path.dirname(settings.config), { recursive: true });
+    fs.writeFileSync(settings.config, body.configContent.trimEnd() + '\n', { mode: 0o600 });
+  }
+  fs.writeFileSync(rcloneSettingsPath, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
+  appendEvent('RCLONE_SETTINGS_UPDATED', { enabled: settings.enabled, remote: settings.remote, path: settings.path, uploadOnlyRole: settings.uploadOnlyRole });
+  return publicRcloneSettings(settings);
+}
+
+function rcloneTarget(settings) {
+  const remote = String(settings.remote || '').replace(/:+$/g, '');
+  const remotePath = String(settings.path || '').replace(/^\/+|\/+$/g, '');
+  return remotePath ? `${remote}:${remotePath}` : `${remote}:`;
+}
+
+async function rcloneTest() {
+  const settings = rawRcloneSettings();
+  if (!settings.remote) throw new Error('remote rclone nao configurado');
+  const out = await run(settings.bin || '/usr/bin/rclone', ['lsd', rcloneTarget(settings), '--config', settings.config || defaultRcloneConfigPath()], {
+    timeout: 60_000,
+    maxBuffer: 1024 * 1024 * 2
+  });
+  appendEvent('RCLONE_TEST_OK', { remote: settings.remote, path: settings.path });
+  return { ok: true, stdout: out.stdout, stderr: out.stderr, target: rcloneTarget(settings) };
+}
+
+async function rcloneUploadTest() {
+  const settings = rawRcloneSettings();
+  if (!settings.remote) throw new Error('remote rclone nao configurado');
+  ensureStateDir();
+  const testPath = path.join(stateDir, `rclone-upload-test-${Date.now()}.txt`);
+  fs.writeFileSync(testPath, `TronSoftOS rclone test ${new Date().toISOString()}\n`);
+  try {
+    const target = `${rcloneTarget(settings).replace(/\/+$/g, '')}/tronsoftos-upload-test.txt`;
+    const out = await run(settings.bin || '/usr/bin/rclone', ['copyto', testPath, target, '--config', settings.config || defaultRcloneConfigPath()], {
+      timeout: 120_000,
+      maxBuffer: 1024 * 1024 * 2
+    });
+    appendEvent('RCLONE_UPLOAD_TEST_OK', { target });
+    return { ok: true, stdout: out.stdout, stderr: out.stderr, target };
+  } finally {
+    fs.rmSync(testPath, { force: true });
+  }
 }
 
 function managedConfig() {
@@ -314,6 +408,7 @@ function clusterStatus() {
 
 function backupStatus() {
   const backupDir = process.env.FIREBIRD_BACKUP_DIR || '/opt/tronfire-storage/firebird/backups';
+  const rclone = publicRcloneSettings();
   const files = [];
   try {
     for (const entry of fs.readdirSync(backupDir, { withFileTypes: true })) {
@@ -329,13 +424,7 @@ function backupStatus() {
   files.sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
   return {
     backupDir,
-    rclone: {
-      bin: process.env.RCLONE_BIN || '/usr/bin/rclone',
-      config: process.env.RCLONE_CONFIG || '/opt/tronsoftos/config/rclone/rclone.conf',
-      remote: process.env.RCLONE_REMOTE || null,
-      path: process.env.RCLONE_BACKUP_PATH || null,
-      uploadOnlyRole: process.env.RCLONE_UPLOAD_ONLY_ROLE || 'primary'
-    },
+    rclone,
     recentFiles: files.slice(0, 20)
   };
 }
@@ -672,6 +761,10 @@ async function handleApi(req, reply, url) {
   if (req.method === 'GET' && url.pathname === '/api/apps') return json(reply, 200, { apps: await appsStatus() });
   if (req.method === 'GET' && url.pathname === '/api/cluster') return json(reply, 200, clusterStatus());
   if (req.method === 'GET' && url.pathname === '/api/backups') return json(reply, 200, backupStatus());
+  if (req.method === 'GET' && url.pathname === '/api/backups/rclone') return json(reply, 200, publicRcloneSettings());
+  if (req.method === 'PATCH' && url.pathname === '/api/backups/rclone') return json(reply, 200, writeRcloneSettings(await readBody(req)));
+  if (req.method === 'POST' && url.pathname === '/api/backups/rclone/test') return json(reply, 200, await rcloneTest());
+  if (req.method === 'POST' && url.pathname === '/api/backups/rclone/upload-test') return json(reply, 200, await rcloneUploadTest());
   if (req.method === 'GET' && url.pathname === '/api/cloudflare') return json(reply, 200, cloudflareStatus());
   if (req.method === 'GET' && url.pathname === '/api/settings/smtp') return json(reply, 200, smtpSettings());
   if (req.method === 'PATCH' && url.pathname === '/api/settings/smtp') return json(reply, 200, writeSmtpSettings(await readBody(req)));

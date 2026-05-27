@@ -453,15 +453,97 @@ function ClusterView({ dashboard }) {
 }
 
 function BackupsView({ dashboard }) {
+  const queryClient = useQueryClient();
+  const rcloneQuery = useQuery({ queryKey: ['rclone-settings'], queryFn: () => api('/api/backups/rclone') });
   const files = dashboard.backups.recentFiles || [];
+  const rclone = rcloneQuery.data || dashboard.backups.rclone || {};
+  const [form, setForm] = useState(null);
+  const values = form || {
+    enabled: rclone.enabled || false,
+    bin: rclone.bin || '/usr/bin/rclone',
+    config: rclone.config || '/opt/tronos/config/rclone/rclone.conf',
+    remote: rclone.remote || 'gdrive',
+    path: rclone.path || 'tronsoftos/backups',
+    uploadOnlyRole: rclone.uploadOnlyRole || 'primary',
+    configContent: ''
+  };
+  const saveMutation = useMutation({
+    mutationFn: payload => fetch('/api/backups/rclone', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(async response => {
+      if (!response.ok) throw new Error((await response.json()).error || `HTTP ${response.status}`);
+      return response.json();
+    }),
+    onSuccess: data => {
+      setForm({ ...data, configContent: '' });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['rclone-settings'] });
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+    }
+  });
+  const testMutation = useMutation({ mutationFn: () => postApi('/api/backups/rclone/test') });
+  const uploadTestMutation = useMutation({ mutationFn: () => postApi('/api/backups/rclone/upload-test') });
+  const setValue = (key, value) => setForm(previous => ({ ...(previous || values), [key]: value }));
+
   return (
-    <div className="grid gap-5 xl:grid-cols-[0.8fr_1.2fr]">
-      <Card title="Rclone" icon={UploadCloud}>
-        <div className="space-y-3 text-sm">
-          <div className="flex justify-between"><span className="text-slate-500">Remote</span><span className="font-medium">{dashboard.backups.rclone.remote || 'nao configurado'}</span></div>
-          <div className="flex justify-between"><span className="text-slate-500">Path</span><span className="font-medium">{dashboard.backups.rclone.path || '-'}</span></div>
-          <div className="flex justify-between"><span className="text-slate-500">Role upload</span><span className="font-medium">{dashboard.backups.rclone.uploadOnlyRole}</span></div>
-        </div>
+    <div className="grid gap-5 xl:grid-cols-[1fr_1fr]">
+      <Card title="Google Drive / Rclone" icon={UploadCloud} action={<StatusPill value={rclone.configConfigured ? 'online' : 'warning'} />}>
+        <form
+          className="grid gap-3 md:grid-cols-2"
+          onSubmit={event => {
+            event.preventDefault();
+            saveMutation.mutate(values);
+          }}
+        >
+          <div className="md:col-span-2">
+            <Checkbox label="Habilitar upload externo" checked={values.enabled} onChange={value => setValue('enabled', value)} />
+          </div>
+          <Field label="Remote" value={values.remote} onChange={value => setValue('remote', value)} placeholder="gdrive" />
+          <Field label="Pasta destino" value={values.path} onChange={value => setValue('path', value)} placeholder="tronsoftos/cliente-x" />
+          <Field label="Binario rclone" value={values.bin} onChange={value => setValue('bin', value)} placeholder="/usr/bin/rclone" />
+          <Field label="Arquivo rclone.conf" value={values.config} onChange={value => setValue('config', value)} placeholder="/opt/tronos/config/rclone/rclone.conf" />
+          <label className="block md:col-span-2">
+            <span className="text-xs font-medium uppercase text-slate-500">Upload permitido no papel</span>
+            <select value={values.uploadOnlyRole} onChange={event => setValue('uploadOnlyRole', event.target.value)} className="mt-1 w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100">
+              <option value="primary">primary</option>
+              <option value="standby">standby</option>
+              <option value="recovery">recovery</option>
+              <option value="any">any</option>
+            </select>
+          </label>
+          <label className="block md:col-span-2">
+            <span className="text-xs font-medium uppercase text-slate-500">Conteudo do rclone.conf</span>
+            <textarea
+              value={values.configContent}
+              onChange={event => setValue('configContent', event.target.value)}
+              placeholder="[gdrive]\ntype = drive\n..."
+              className="mt-1 h-32 w-full rounded-md border border-slate-200 px-3 py-2 font-mono text-xs outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
+            />
+          </label>
+          <div className="flex flex-wrap items-center gap-3 md:col-span-2">
+            <button disabled={saveMutation.isPending} className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-950 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50">
+              <Save className="h-4 w-4" />
+              Salvar rclone
+            </button>
+            <button type="button" disabled={testMutation.isPending} onClick={() => testMutation.mutate()} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50">
+              <RefreshCw className="h-4 w-4" />
+              Testar conexao
+            </button>
+            <button type="button" disabled={uploadTestMutation.isPending} onClick={() => uploadTestMutation.mutate()} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50">
+              <UploadCloud className="h-4 w-4" />
+              Upload teste
+            </button>
+          </div>
+          <div className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-800 md:col-span-2">
+            Em HA, mantenha upload permitido no papel primary. Quando o standby for promovido, ele passa a enviar os backups.
+          </div>
+          {saveMutation.isSuccess ? <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700 md:col-span-2">Configuracao salva.</div> : null}
+          {testMutation.isSuccess ? <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700 md:col-span-2">Conexao OK: {testMutation.data.target}</div> : null}
+          {uploadTestMutation.isSuccess ? <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700 md:col-span-2">Upload OK: {uploadTestMutation.data.target}</div> : null}
+          {saveMutation.isError || testMutation.isError || uploadTestMutation.isError ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 md:col-span-2">{saveMutation.error?.message || testMutation.error?.message || uploadTestMutation.error?.message}</div> : null}
+        </form>
       </Card>
       <Card title="Arquivos recentes" icon={FileClock}>
         <div className="overflow-hidden rounded-md border border-slate-200">
