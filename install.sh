@@ -8,6 +8,51 @@ ENV_FILE="${ENV_DIR}/tronsoftos.env"
 USER_NAME="${TRONSOFTOS_USER:-tronsoftos}"
 GROUP_NAME="${TRONSOFTOS_GROUP:-tronsoftos}"
 
+prepare_frontend() {
+  if [ ! -f "$APP_DIR/frontend/package.json" ]; then
+    return 0
+  fi
+
+  if [ "${TRONSOFTOS_SKIP_FRONTEND_BUILD:-false}" = "true" ]; then
+    if [ -f "$APP_DIR/frontend/dist/index.html" ]; then
+      echo "Build do frontend pulado; usando frontend/dist existente."
+      return 0
+    fi
+    echo "TRONSOFTOS_SKIP_FRONTEND_BUILD=true, mas frontend/dist/index.html nao existe." >&2
+    return 74
+  fi
+
+  echo "Preparando frontend..."
+  cd "$APP_DIR/frontend"
+  npm config set fetch-timeout "${NPM_FETCH_TIMEOUT:-120000}"
+  npm config set fetch-retries "${NPM_FETCH_RETRIES:-5}"
+  npm config set fetch-retry-mintimeout "${NPM_FETCH_RETRY_MINTIMEOUT:-20000}"
+  npm config set fetch-retry-maxtimeout "${NPM_FETCH_RETRY_MAXTIMEOUT:-120000}"
+  npm config set audit false
+  npm config set fund false
+
+  local attempt
+  for attempt in 1 2 3; do
+    echo "Instalando dependencias frontend (tentativa $attempt/3)..."
+    if npm install --prefer-offline --no-audit --fund=false; then
+      npm run build
+      return 0
+    fi
+    sleep $((attempt * 10))
+  done
+
+  if [ -f "$APP_DIR/frontend/dist/index.html" ]; then
+    echo "Aviso: npm falhou, mas frontend/dist existente sera mantido." >&2
+    return 0
+  fi
+
+  echo "Falha ao baixar dependencias npm e nao ha frontend/dist pronto." >&2
+  echo "Opcoes:" >&2
+  echo "  1) Corrija internet/DNS/proxy e rode sudo bash install.sh novamente." >&2
+  echo "  2) Gere/copiei frontend/dist antes e rode TRONSOFTOS_SKIP_FRONTEND_BUILD=true sudo bash install.sh." >&2
+  return 74
+}
+
 install_docker() {
   if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     echo "Docker Compose ja instalado."
@@ -69,7 +114,6 @@ rsync -a --delete \
   --exclude '.git' \
   --exclude 'node_modules' \
   --exclude 'frontend/node_modules' \
-  --exclude 'frontend/dist' \
   ./ "$APP_DIR/"
 
 if [ ! -f "$ENV_FILE" ]; then
@@ -84,12 +128,7 @@ if [ "${TRONSOFTOS_SKIP_WIZARD:-false}" != "true" ]; then
   TRONSOFTOS_APP_DIR="$APP_DIR" bash "$APP_DIR/scripts/configure-wizard.sh"
 fi
 
-echo "Preparando frontend..."
-if [ -f "$APP_DIR/frontend/package.json" ]; then
-  cd "$APP_DIR/frontend"
-  npm install
-  npm run build
-fi
+prepare_frontend
 
 echo "Preparando TronFire..."
 if [ ! -f "$APP_DIR/apps/tronfire/.env" ]; then
