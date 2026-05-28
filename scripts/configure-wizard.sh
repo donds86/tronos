@@ -373,6 +373,11 @@ if [ -n "$GHCR_USER" ] && [ -n "$GHCR_TOKEN" ]; then
   mkdir -p "$APP_DIR/state/docker-config"
   chmod 700 "$APP_DIR/state/docker-config"
   if printf '%s\n' "$GHCR_TOKEN" | DOCKER_CONFIG="$APP_DIR/state/docker-config" docker login "$GHCR_REGISTRY" -u "$GHCR_USER" --password-stdin; then
+    if id tronsoftos >/dev/null 2>&1; then
+      chown -R tronsoftos:tronsoftos "$APP_DIR/state/docker-config"
+    fi
+    chmod 700 "$APP_DIR/state/docker-config"
+    [ ! -f "$APP_DIR/state/docker-config/config.json" ] || chmod 600 "$APP_DIR/state/docker-config/config.json"
     echo "Login $GHCR_REGISTRY salvo para uso do TronSoftOS."
   else
     echo "Aviso: login $GHCR_REGISTRY falhou. Verifique as credenciais de instalacao." >&2
