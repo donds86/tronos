@@ -1247,6 +1247,37 @@ function startAppAction(app, action) {
   return publicActionJob(job);
 }
 
+function dockerRegistryLogin(body) {
+  const registry = String(body.registry || 'ghcr.io').trim();
+  const username = String(body.username || '').trim();
+  const token = String(body.token || '').trim();
+  if (!registry) throw new Error('registry obrigatorio');
+  if (!username) throw new Error('usuario obrigatorio');
+  if (!token) throw new Error('token obrigatorio');
+  return new Promise((resolve, reject) => {
+    const child = spawn('docker', ['login', registry, '-u', username, '--password-stdin'], { cwd: appRoot, windowsHide: true });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error('timeout no docker login'));
+    }, 60_000);
+    child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+    child.on('error', err => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on('close', code => {
+      clearTimeout(timer);
+      appendEvent(code === 0 ? 'DOCKER_REGISTRY_LOGIN_OK' : 'DOCKER_REGISTRY_LOGIN_FAILED', { registry, username, exitCode: code, stdout, stderr });
+      if (code !== 0) return reject(new Error(stderr || stdout || `docker login saiu com codigo ${code}`));
+      resolve({ ok: true, registry, username, stdout, stderr });
+    });
+    child.stdin.end(`${token}\n`);
+  });
+}
+
 function contentTypeFor(filePath) {
   const ext = path.extname(filePath).toLowerCase();
   return {
@@ -1278,6 +1309,7 @@ async function handleApi(req, reply, url) {
   if (req.method === 'GET' && url.pathname === '/api/dashboard') return json(reply, 200, await dashboard());
   if (req.method === 'GET' && url.pathname === '/api/diagnostics') return json(reply, 200, await diagnostics());
   if (req.method === 'GET' && url.pathname === '/api/apps') return json(reply, 200, { apps: await appsStatus() });
+  if (req.method === 'POST' && url.pathname === '/api/apps/registry-login') return json(reply, 200, await dockerRegistryLogin(await readBody(req)));
   const actionJobMatch = url.pathname.match(/^\/api\/actions\/([^/]+)$/);
   if (req.method === 'GET' && actionJobMatch) {
     const job = actionJobs.get(actionJobMatch[1]);
