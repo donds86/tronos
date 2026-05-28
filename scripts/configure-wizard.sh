@@ -12,6 +12,13 @@ MANAGED_APPS="$APP_DIR/config/managed-apps.json"
 CLUSTER_SECRETS="$APP_DIR/state/cluster-secrets.env"
 NODE_IDENTITY="$APP_DIR/state/node-identity.json"
 
+for secrets_file in "$APP_DIR/config/installer-secrets.env" "$ENV_DIR/installer-secrets.env"; do
+  if [ -f "$secrets_file" ]; then
+    # shellcheck disable=SC1090
+    . "$secrets_file"
+  fi
+done
+
 if [ "$(id -u)" -ne 0 ]; then
   echo "Execute como root: sudo scripts/configure-wizard.sh" >&2
   exit 77
@@ -333,25 +340,21 @@ CLOUDFLARE_TARGET_IP=$CLOUDFLARE_TARGET_IP
 EOF
 
 line
-if ask_bool "Configurar login do GHCR para baixar imagens privadas agora?" "n"; then
-  GHCR_USER="$(ask "Usuario GitHub/GHCR" "")"
-  printf "Token GHCR com read:packages: "
-  IFS= read -rs GHCR_TOKEN
-  printf "\n"
-  if [ -n "$GHCR_USER" ] && [ -n "$GHCR_TOKEN" ]; then
-    mkdir -p "$APP_DIR/state/docker-config"
-    chmod 700 "$APP_DIR/state/docker-config"
-    if printf '%s\n' "$GHCR_TOKEN" | DOCKER_CONFIG="$APP_DIR/state/docker-config" docker login ghcr.io -u "$GHCR_USER" --password-stdin; then
-      echo "Login GHCR salvo para uso do TronSoftOS."
-    else
-      echo "Aviso: login GHCR falhou. Voce podera repetir depois no servidor com DOCKER_CONFIG=$APP_DIR/state/docker-config docker login ghcr.io" >&2
-    fi
+GHCR_REGISTRY="${TRONSOFTOS_GHCR_REGISTRY:-${GHCR_REGISTRY:-ghcr.io}}"
+GHCR_USER="${TRONSOFTOS_GHCR_USER:-${GHCR_USER:-}}"
+GHCR_TOKEN="${TRONSOFTOS_GHCR_TOKEN:-${GHCR_TOKEN:-}}"
+if [ -n "$GHCR_USER" ] && [ -n "$GHCR_TOKEN" ]; then
+  mkdir -p "$APP_DIR/state/docker-config"
+  chmod 700 "$APP_DIR/state/docker-config"
+  if printf '%s\n' "$GHCR_TOKEN" | DOCKER_CONFIG="$APP_DIR/state/docker-config" docker login "$GHCR_REGISTRY" -u "$GHCR_USER" --password-stdin; then
+    echo "Login $GHCR_REGISTRY salvo para uso do TronSoftOS."
   else
-    echo "Login GHCR pulado: usuario ou token nao informado."
+    echo "Aviso: login $GHCR_REGISTRY falhou. Verifique as credenciais de instalacao." >&2
   fi
-  unset GHCR_TOKEN
+  unset GHCR_TOKEN TRONSOFTOS_GHCR_TOKEN
 else
-  echo "Login GHCR pulado. Se usar imagens privadas, configure antes de subir o app."
+  echo "Login GHCR nao configurado por credenciais de instalacao."
+  echo "Para imagens privadas, forneca TRONSOFTOS_GHCR_USER/TRONSOFTOS_GHCR_TOKEN ou $APP_DIR/config/installer-secrets.env antes de instalar."
 fi
 
 cat > "$TRONFIRE_ENV" <<EOF
@@ -394,8 +397,8 @@ TRONCOMANDA_STORAGE_ROOT=/opt/tronfire-storage/troncomanda
 
 TRONCOMANDA_WEB_PORT=8000
 TRONCOMANDA_API_PORT=9000
-TRONCOMANDA_LAN_HOST=$SERVER_IP
-TRONCOMANDA_PUBLIC_URL=http://$SERVER_IP:8000
+TRONCOMANDA_LAN_HOST=${HA_VIP:-$SERVER_IP}
+TRONCOMANDA_PUBLIC_URL=http://${HA_VIP:-$SERVER_IP}:8000
 
 TRONCOMANDA_SECRET_KEY=$TRONCOMANDA_SECRET_KEY
 TRONCOMANDA_FIREBIRD_HOST=host.docker.internal
