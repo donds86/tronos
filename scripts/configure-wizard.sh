@@ -9,6 +9,7 @@ TRONSOFTOS_ENV="$ENV_DIR/tronsoftos.env"
 TRONFIRE_ENV="$APP_DIR/apps/tronfire/.env"
 MANAGED_APPS="$APP_DIR/config/managed-apps.json"
 CLUSTER_SECRETS="$APP_DIR/state/cluster-secrets.env"
+NODE_IDENTITY="$APP_DIR/state/node-identity.json"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "Execute como root: sudo scripts/configure-wizard.sh" >&2
@@ -54,6 +55,14 @@ yes_no() {
 
 command_exists() {
   command -v "$1" >/dev/null 2>&1
+}
+
+new_uuid() {
+  if command_exists uuidgen; then
+    uuidgen | tr '[:upper:]' '[:lower:]'
+  else
+    openssl rand -hex 16 | sed 's/^\(........\)\(....\)\(....\)\(....\)\(............\)$/\1-\2-\3-\4-\5/'
+  fi
 }
 
 detect_default_iface() {
@@ -180,6 +189,9 @@ NODE_ROLE="primary"
 if [ "$DEPLOYMENT_MODE" = "ha" ]; then
   NODE_ROLE="$(ask "Papel deste no (primary/standby/recovery)" "primary")"
 fi
+CLUSTER_ID="$(ask "ID do cluster/cliente" "$(echo "$NODE_NAME" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9_.-' '-')")"
+NODE_ID="$(new_uuid)"
+INSTALL_ID="$(new_uuid)"
 
 SESSION_SECRET=""
 INTERNAL_TOKEN=""
@@ -261,6 +273,7 @@ TRONSOFTOS_APP_DIR=$APP_DIR
 TRONSOFTOS_PORT=$TRONSOFTOS_PORT
 TRONSOFTOS_HEALTH_URL=http://127.0.0.1:$TRONSOFTOS_PORT/health
 TRONSOFTOS_DEPLOYMENT_MODE=$DEPLOYMENT_MODE
+TRONSOFTOS_CLUSTER_ID=$CLUSTER_ID
 TRONSOFTOS_NODE_NAME=$NODE_NAME
 TRONSOFTOS_NODE_ROLE=$NODE_ROLE
 TRONSOFTOS_STATE_DIR=$APP_DIR/state
@@ -268,6 +281,7 @@ TRONSOFTOS_LOG_DIR=$APP_DIR/logs
 TRONSOFTOS_CLUSTER_LOCK=$APP_DIR/state/cluster-lock.json
 TRONSOFTOS_CLUSTER_SECRETS=$APP_DIR/state/cluster-secrets.env
 TRONSOFTOS_FRONTEND_DIST=$APP_DIR/frontend/dist
+TRONSOFTOS_NODE_IDENTITY=$APP_DIR/state/node-identity.json
 
 HOST_STATIC_IP_ENABLED=$STATIC_IP_ENABLED
 HOST_STATIC_IP_INTERFACE=$STATIC_IP_INTERFACE
@@ -325,6 +339,7 @@ TRONSOFTOS_STATE_DIR=$APP_DIR/state
 
 TRONFIRE_DEPLOYMENT_MODE=$DEPLOYMENT_MODE
 TRONFIRE_NODE_ROLE=$NODE_ROLE
+TRONSOFTOS_CLUSTER_ID=$CLUSTER_ID
 TRONSOFTOS_NODE_NAME=$NODE_NAME
 TRONSOFTOS_CLUSTER_LOCK=$APP_DIR/state/cluster-lock.json
 TRONSOFTOS_INTERNAL_TOKEN=$INTERNAL_TOKEN
@@ -355,6 +370,19 @@ SESSION_SECRET=$SESSION_SECRET
 TRONSOFTOS_INTERNAL_TOKEN=$INTERNAL_TOKEN
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 FIREBIRD_PASSWORD=$FIREBIRD_PASSWORD
+EOF
+
+cat > "$NODE_IDENTITY" <<EOF
+{
+  "clusterId": "$CLUSTER_ID",
+  "nodeId": "$NODE_ID",
+  "nodeName": "$NODE_NAME",
+  "nodeRole": "$NODE_ROLE",
+  "installId": "$INSTALL_ID",
+  "deploymentMode": "$DEPLOYMENT_MODE",
+  "createdAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "updatedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
 EOF
 
 if [ "$FIREBIRD_MODE" = "host" ]; then
@@ -431,7 +459,7 @@ else
 EOF
 fi
 
-chmod 600 "$TRONSOFTOS_ENV" "$TRONFIRE_ENV" "$CLUSTER_SECRETS"
+chmod 600 "$TRONSOFTOS_ENV" "$TRONFIRE_ENV" "$CLUSTER_SECRETS" "$NODE_IDENTITY"
 
 line
 echo "Configuracao gravada com sucesso:"
@@ -439,6 +467,7 @@ echo "- $TRONSOFTOS_ENV"
 echo "- $TRONFIRE_ENV"
 echo "- $MANAGED_APPS"
 echo "- $CLUSTER_SECRETS"
+echo "- $NODE_IDENTITY"
 line
 echo "Proximos comandos sugeridos:"
 if [ "$FIREBIRD_MODE" = "host" ]; then

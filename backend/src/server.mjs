@@ -13,10 +13,12 @@ const port = Number(process.env.TRONSOFTOS_PORT || 8080);
 const configPath = process.env.MANAGED_APPS_CONFIG || path.join(appRoot, 'config/managed-apps.json');
 const fallbackConfigPath = path.join(appRoot, 'config/managed-apps.example.json');
 const stateDir = process.env.TRONSOFTOS_STATE_DIR || path.join(appRoot, 'state');
+const nodeIdentityPath = process.env.TRONSOFTOS_NODE_IDENTITY || path.join(stateDir, 'node-identity.json');
 const clusterLockPath = process.env.TRONSOFTOS_CLUSTER_LOCK || path.join(stateDir, 'cluster-lock.json');
 const clusterSecretsPath = process.env.TRONSOFTOS_CLUSTER_SECRETS || path.join(stateDir, 'cluster-secrets.env');
 const eventLogPath = process.env.TRONSOFTOS_EVENT_LOG || path.join(stateDir, 'events.jsonl');
 const smtpSettingsPath = process.env.TRONSOFTOS_SMTP_SETTINGS || path.join(stateDir, 'smtp-settings.json');
+const cloudflareSettingsPath = process.env.TRONSOFTOS_CLOUDFLARE_SETTINGS || path.join(stateDir, 'cloudflare-settings.json');
 const rcloneSettingsPath = process.env.TRONSOFTOS_RCLONE_SETTINGS || path.join(stateDir, 'rclone-settings.json');
 const googleCredentialsPath = process.env.TRONSOFTOS_GOOGLE_CREDENTIALS || path.join(stateDir, 'google-drive-credentials.json');
 const googleOauthDir = process.env.TRONSOFTOS_GOOGLE_OAUTH_DIR || path.join(stateDir, 'google-oauth');
@@ -67,6 +69,60 @@ function readEvents(limit = 100) {
   } catch {
     return [];
   }
+}
+
+function envLike(value, fallback = '') {
+  const text = String(value ?? '').trim();
+  return text || fallback;
+}
+
+function defaultNodeIdentity() {
+  const existing = readJson(nodeIdentityPath, {});
+  const now = new Date().toISOString();
+  return {
+    clusterId: existing.clusterId || process.env.TRONSOFTOS_CLUSTER_ID || process.env.CUSTOMER_ID || 'local',
+    nodeId: existing.nodeId || crypto.randomUUID(),
+    nodeName: existing.nodeName || process.env.TRONSOFTOS_NODE_NAME || 'servidor-01',
+    nodeRole: existing.nodeRole || process.env.TRONFIRE_NODE_ROLE || process.env.TRONSOFTOS_NODE_ROLE || 'primary',
+    installId: existing.installId || crypto.randomUUID(),
+    deploymentMode: existing.deploymentMode || process.env.TRONSOFTOS_DEPLOYMENT_MODE || 'simple',
+    createdAt: existing.createdAt || now,
+    updatedAt: existing.updatedAt || now
+  };
+}
+
+function nodeIdentity() {
+  const identity = defaultNodeIdentity();
+  if (!fs.existsSync(nodeIdentityPath)) {
+    ensureStateDir();
+    fs.writeFileSync(nodeIdentityPath, `${JSON.stringify(identity, null, 2)}\n`, { mode: 0o600 });
+  }
+  return identity;
+}
+
+function normalizeNodeIdentity(body) {
+  const current = nodeIdentity();
+  const next = {
+    ...current,
+    clusterId: envLike(body.clusterId, current.clusterId),
+    nodeName: envLike(body.nodeName, current.nodeName),
+    nodeRole: envLike(body.nodeRole, current.nodeRole),
+    deploymentMode: envLike(body.deploymentMode, current.deploymentMode),
+    updatedAt: new Date().toISOString()
+  };
+  if (!['primary', 'standby', 'recovery'].includes(next.nodeRole)) throw new Error('papel do no invalido');
+  if (!['simple', 'ha'].includes(next.deploymentMode)) throw new Error('modo de implantacao invalido');
+  if (!/^[A-Za-z0-9_.-]{1,80}$/.test(next.clusterId)) throw new Error('cluster_id invalido');
+  if (!/^[A-Za-z0-9_.-]{1,80}$/.test(next.nodeName)) throw new Error('nome do no invalido');
+  return next;
+}
+
+function writeNodeIdentity(body) {
+  ensureStateDir();
+  const identity = normalizeNodeIdentity(body);
+  fs.writeFileSync(nodeIdentityPath, `${JSON.stringify(identity, null, 2)}\n`, { mode: 0o600 });
+  appendEvent('NODE_IDENTITY_UPDATED', { clusterId: identity.clusterId, nodeName: identity.nodeName, nodeRole: identity.nodeRole });
+  return identity;
 }
 
 function publicSmtpSettings(settings) {
@@ -606,10 +662,12 @@ async function appsStatus() {
 
 function clusterStatus() {
   const lock = readJson(clusterLockPath, null);
+  const identity = nodeIdentity();
   return {
-    mode: process.env.TRONSOFTOS_DEPLOYMENT_MODE || 'simple',
-    nodeName: process.env.TRONSOFTOS_NODE_NAME || 'local',
-    nodeRole: process.env.TRONFIRE_NODE_ROLE || process.env.TRONSOFTOS_NODE_ROLE || 'primary',
+    mode: identity.deploymentMode || process.env.TRONSOFTOS_DEPLOYMENT_MODE || 'simple',
+    nodeName: identity.nodeName || process.env.TRONSOFTOS_NODE_NAME || 'local',
+    nodeRole: identity.nodeRole || process.env.TRONFIRE_NODE_ROLE || process.env.TRONSOFTOS_NODE_ROLE || 'primary',
+    identity,
     vip: process.env.HA_VIP || null,
     lockPath: clusterLockPath,
     lock,
@@ -644,13 +702,124 @@ function backupStatus() {
   };
 }
 
-function cloudflareStatus() {
+function rawCloudflareSettings() {
   return {
-    recordName: process.env.CLOUDFLARE_RECORD_NAME || null,
+    enabled: false,
+    apiToken: process.env.CLOUDFLARE_API_TOKEN || '',
+    zoneId: process.env.CLOUDFLARE_ZONE_ID || '',
+    recordId: process.env.CLOUDFLARE_RECORD_ID || '',
+    recordName: process.env.CLOUDFLARE_RECORD_NAME || '',
     recordType: process.env.CLOUDFLARE_RECORD_TYPE || 'A',
-    targetIp: process.env.CLOUDFLARE_TARGET_IP || process.env.HA_VIP || null,
-    tokenConfigured: !!process.env.CLOUDFLARE_API_TOKEN && process.env.CLOUDFLARE_API_TOKEN !== 'change-me'
+    targetIp: process.env.CLOUDFLARE_TARGET_IP || process.env.HA_VIP || '',
+    proxied: process.env.CLOUDFLARE_PROXIED ? process.env.CLOUDFLARE_PROXIED === 'true' : true,
+    ttl: Number(process.env.CLOUDFLARE_TTL || 60),
+    ...readJson(cloudflareSettingsPath, {})
   };
+}
+
+function publicCloudflareSettings(settings = rawCloudflareSettings()) {
+  return {
+    enabled: settings.enabled === true,
+    zoneId: settings.zoneId || '',
+    recordId: settings.recordId || '',
+    recordName: settings.recordName || null,
+    recordType: settings.recordType || 'A',
+    targetIp: settings.targetIp || null,
+    tokenConfigured: !!settings.apiToken && settings.apiToken !== 'change-me',
+    proxied: settings.proxied !== false,
+    ttl: Number(settings.ttl || 60)
+  };
+}
+
+function normalizeCloudflareSettings(body) {
+  const current = rawCloudflareSettings();
+  const next = {
+    enabled: body.enabled === true,
+    apiToken: body.apiToken ? String(body.apiToken).trim() : current.apiToken || '',
+    zoneId: String(body.zoneId || current.zoneId || '').trim(),
+    recordId: String(body.recordId || current.recordId || '').trim(),
+    recordName: String(body.recordName || '').trim(),
+    recordType: String(body.recordType || 'A').trim().toUpperCase(),
+    targetIp: String(body.targetIp || '').trim(),
+    proxied: body.proxied !== false,
+    ttl: Number(body.ttl || 60)
+  };
+  if (!['A', 'AAAA', 'CNAME'].includes(next.recordType)) throw new Error('tipo de registro Cloudflare invalido');
+  if (next.ttl !== 1 && (next.ttl < 60 || next.ttl > 86400)) throw new Error('TTL Cloudflare invalido');
+  if (next.enabled) {
+    if (!next.apiToken) throw new Error('token Cloudflare nao informado');
+    if (!next.zoneId) throw new Error('zone id Cloudflare nao informado');
+    if (!next.recordName) throw new Error('nome do registro Cloudflare nao informado');
+    if (!next.targetIp) throw new Error('destino Cloudflare nao informado');
+  }
+  return next;
+}
+
+function writeCloudflareSettings(body) {
+  ensureStateDir();
+  const settings = normalizeCloudflareSettings(body);
+  fs.writeFileSync(cloudflareSettingsPath, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
+  appendEvent('CLOUDFLARE_SETTINGS_UPDATED', {
+    enabled: settings.enabled,
+    recordName: settings.recordName,
+    recordType: settings.recordType,
+    targetIp: settings.targetIp
+  });
+  return publicCloudflareSettings(settings);
+}
+
+async function cloudflareRequest(settings, method, pathname, body = null) {
+  if (!settings.apiToken) throw new Error('token Cloudflare nao configurado');
+  const response = await fetch(`https://api.cloudflare.com/client/v4${pathname}`, {
+    method,
+    headers: {
+      authorization: `Bearer ${settings.apiToken}`,
+      'content-type': 'application/json'
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.success === false) {
+    const message = payload.errors?.[0]?.message || `Cloudflare HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  return payload;
+}
+
+async function cloudflareTest() {
+  const settings = rawCloudflareSettings();
+  if (!settings.zoneId) throw new Error('zone id Cloudflare nao configurado');
+  const payload = await cloudflareRequest(settings, 'GET', `/zones/${settings.zoneId}`);
+  appendEvent('CLOUDFLARE_TEST_OK', { zoneId: settings.zoneId, name: payload.result?.name });
+  return { ok: true, zone: payload.result?.name || settings.zoneId };
+}
+
+async function cloudflareSync() {
+  const settings = rawCloudflareSettings();
+  if (settings.enabled !== true) throw new Error('Cloudflare desabilitado');
+  const body = {
+    type: settings.recordType || 'A',
+    name: settings.recordName,
+    content: settings.targetIp,
+    ttl: Number(settings.ttl || 60),
+    proxied: settings.proxied !== false
+  };
+  let recordId = settings.recordId || '';
+  if (!recordId) {
+    const query = new URLSearchParams({ type: body.type, name: body.name });
+    const found = await cloudflareRequest(settings, 'GET', `/zones/${settings.zoneId}/dns_records?${query.toString()}`);
+    recordId = found.result?.[0]?.id || '';
+  }
+  const payload = recordId
+    ? await cloudflareRequest(settings, 'PUT', `/zones/${settings.zoneId}/dns_records/${recordId}`, body)
+    : await cloudflareRequest(settings, 'POST', `/zones/${settings.zoneId}/dns_records`, body);
+  const next = writeCloudflareSettings({ ...settings, recordId: payload.result?.id || recordId });
+  appendEvent('CLOUDFLARE_DNS_SYNCED', { recordName: next.recordName, targetIp: next.targetIp });
+  return { ok: true, record: publicCloudflareSettings({ ...settings, recordId: payload.result?.id || recordId }) };
+}
+
+function cloudflareStatus() {
+  return publicCloudflareSettings();
 }
 
 async function hostFirebirdStatus() {
@@ -975,6 +1144,8 @@ async function handleApi(req, reply, url) {
   if (req.method === 'GET' && url.pathname === '/api/diagnostics') return json(reply, 200, await diagnostics());
   if (req.method === 'GET' && url.pathname === '/api/apps') return json(reply, 200, { apps: await appsStatus() });
   if (req.method === 'GET' && url.pathname === '/api/cluster') return json(reply, 200, clusterStatus());
+  if (req.method === 'GET' && url.pathname === '/api/node-identity') return json(reply, 200, nodeIdentity());
+  if (req.method === 'PATCH' && url.pathname === '/api/node-identity') return json(reply, 200, writeNodeIdentity(await readBody(req)));
   if (req.method === 'GET' && url.pathname === '/api/backups') return json(reply, 200, backupStatus());
   if (req.method === 'GET' && url.pathname === '/api/backups/rclone') return json(reply, 200, publicRcloneSettings());
   if (req.method === 'PATCH' && url.pathname === '/api/backups/rclone') return json(reply, 200, writeRcloneSettings(await readBody(req)));
@@ -986,6 +1157,9 @@ async function handleApi(req, reply, url) {
   if (req.method === 'POST' && url.pathname === '/api/backups/google/start') return json(reply, 200, startGoogleDriveOauth(req, await readBody(req)));
   if (req.method === 'GET' && url.pathname === '/api/backups/google/callback') return await completeGoogleDriveOauth(reply, url);
   if (req.method === 'GET' && url.pathname === '/api/cloudflare') return json(reply, 200, cloudflareStatus());
+  if (req.method === 'PATCH' && url.pathname === '/api/cloudflare') return json(reply, 200, writeCloudflareSettings(await readBody(req)));
+  if (req.method === 'POST' && url.pathname === '/api/cloudflare/test') return json(reply, 200, await cloudflareTest());
+  if (req.method === 'POST' && url.pathname === '/api/cloudflare/sync') return json(reply, 200, await cloudflareSync());
   if (req.method === 'GET' && url.pathname === '/api/settings/smtp') return json(reply, 200, smtpSettings());
   if (req.method === 'PATCH' && url.pathname === '/api/settings/smtp') return json(reply, 200, writeSmtpSettings(await readBody(req)));
   if (req.method === 'GET' && url.pathname === '/api/events') return json(reply, 200, { events: readEvents(Number(url.searchParams.get('limit') || 100)) });

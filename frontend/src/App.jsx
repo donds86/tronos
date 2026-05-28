@@ -430,7 +430,33 @@ function DiagnosticsView() {
 }
 
 function ClusterView({ dashboard }) {
+  const queryClient = useQueryClient();
   const cluster = dashboard.cluster;
+  const identityQuery = useQuery({ queryKey: ['node-identity'], queryFn: () => api('/api/node-identity') });
+  const identity = identityQuery.data || cluster.identity || {};
+  const [form, setForm] = useState(null);
+  const values = form || {
+    clusterId: identity.clusterId || 'local',
+    nodeName: identity.nodeName || cluster.nodeName || 'servidor-01',
+    nodeRole: identity.nodeRole || cluster.nodeRole || 'primary',
+    deploymentMode: identity.deploymentMode || cluster.mode || 'simple'
+  };
+  const saveMutation = useMutation({
+    mutationFn: payload => fetch('/api/node-identity', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(async response => {
+      if (!response.ok) throw new Error((await response.json()).error || `HTTP ${response.status}`);
+      return response.json();
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['node-identity'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+    }
+  });
+  const setValue = (key, value) => setForm(previous => ({ ...(previous || values), [key]: value }));
   return (
     <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
       <Card title="Estado do cluster" icon={GitBranch}>
@@ -439,6 +465,9 @@ function ClusterView({ dashboard }) {
             ['Modo', cluster.mode],
             ['No', cluster.nodeName],
             ['Papel', cluster.nodeRole],
+            ['Cluster ID', identity.clusterId || '-'],
+            ['Node ID', identity.nodeId || '-'],
+            ['Install ID', identity.installId || '-'],
             ['VIP', cluster.vip || 'nao configurado'],
             ['Keepalived', cluster.keepalived?.enabled ? 'ativo' : 'nao configurado'],
             ['Cluster lock', cluster.lock ? 'presente' : 'ausente']
@@ -449,6 +478,41 @@ function ClusterView({ dashboard }) {
             </div>
           ))}
         </dl>
+      </Card>
+      <Card title="Identidade do no" icon={ShieldCheck}>
+        <form
+          className="grid gap-3 md:grid-cols-2"
+          onSubmit={event => {
+            event.preventDefault();
+            saveMutation.mutate(values);
+          }}
+        >
+          <Field label="Cluster ID" value={values.clusterId} onChange={value => setValue('clusterId', value)} placeholder="cliente-x" />
+          <Field label="Nome do no" value={values.nodeName} onChange={value => setValue('nodeName', value)} placeholder="servidor-01" />
+          <label className="block">
+            <span className="text-xs font-medium uppercase text-slate-500">Modo</span>
+            <select value={values.deploymentMode} onChange={event => setValue('deploymentMode', event.target.value)} className="mt-1 w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100">
+              <option value="simple">simple</option>
+              <option value="ha">ha</option>
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-xs font-medium uppercase text-slate-500">Papel</span>
+            <select value={values.nodeRole} onChange={event => setValue('nodeRole', event.target.value)} className="mt-1 w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100">
+              <option value="primary">primary</option>
+              <option value="standby">standby</option>
+              <option value="recovery">recovery</option>
+            </select>
+          </label>
+          <div className="md:col-span-2 flex flex-wrap items-center gap-3">
+            <button disabled={saveMutation.isPending} className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-950 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50">
+              <Save className="h-4 w-4" />
+              Salvar identidade
+            </button>
+            {saveMutation.isSuccess ? <span className="text-sm text-green-700">Identidade salva.</span> : null}
+            {saveMutation.isError ? <span className="text-sm text-red-700">{saveMutation.error?.message}</span> : null}
+          </div>
+        </form>
       </Card>
       <Card title="Topologia HA" icon={Activity}><Topology dashboard={dashboard} /></Card>
     </div>
@@ -663,15 +727,113 @@ function BackupsView({ dashboard }) {
 }
 
 function CloudflareView({ dashboard }) {
+  const queryClient = useQueryClient();
+  const cloudflareQuery = useQuery({ queryKey: ['cloudflare-settings'], queryFn: () => api('/api/cloudflare') });
+  const cloudflare = cloudflareQuery.data || dashboard.cloudflare || {};
+  const [form, setForm] = useState(null);
+  const values = form || {
+    enabled: cloudflare.enabled || false,
+    apiToken: '',
+    zoneId: cloudflare.zoneId || '',
+    recordId: cloudflare.recordId || '',
+    recordName: cloudflare.recordName || '',
+    recordType: cloudflare.recordType || 'A',
+    targetIp: cloudflare.targetIp || '',
+    proxied: cloudflare.proxied !== false,
+    ttl: cloudflare.ttl || 60
+  };
+  const saveMutation = useMutation({
+    mutationFn: payload => fetch('/api/cloudflare', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(async response => {
+      if (!response.ok) throw new Error((await response.json()).error || `HTTP ${response.status}`);
+      return response.json();
+    }),
+    onSuccess: data => {
+      setForm({ ...data, apiToken: '' });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['cloudflare-settings'] });
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+    }
+  });
+  const testMutation = useMutation({ mutationFn: () => postApi('/api/cloudflare/test') });
+  const syncMutation = useMutation({
+    mutationFn: () => postApi('/api/cloudflare/sync'),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['cloudflare-settings'] });
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+    }
+  });
+  const setValue = (key, value) => setForm(previous => ({ ...(previous || values), [key]: value }));
   return (
-    <Card title="Cloudflare" icon={Cloud}>
-      <div className="grid gap-4 md:grid-cols-4">
-        <Stat label="Registro" value={dashboard.cloudflare.recordName || '-'} detail={dashboard.cloudflare.recordType} icon={Cloud} />
-        <Stat label="Destino" value={dashboard.cloudflare.targetIp || '-'} detail="VIP ou IP ativo" icon={Zap} />
-        <Stat label="Token" value={dashboard.cloudflare.tokenConfigured ? 'OK' : 'Pendente'} detail="API Cloudflare" icon={ShieldCheck} tone={dashboard.cloudflare.tokenConfigured ? 'green' : 'amber'} />
-        <Stat label="Proxy" value="Planejado" detail="Tunnel/DNS API" icon={Activity} />
+    <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
+      <Card title="Cloudflare" icon={Cloud}>
+        <div className="grid gap-4 md:grid-cols-4">
+          <Stat label="Registro" value={cloudflare.recordName || '-'} detail={cloudflare.recordType || 'A'} icon={Cloud} />
+          <Stat label="Destino" value={cloudflare.targetIp || '-'} detail="VIP ou IP ativo" icon={Zap} />
+          <Stat label="Token" value={cloudflare.tokenConfigured ? 'OK' : 'Pendente'} detail="API Cloudflare" icon={ShieldCheck} tone={cloudflare.tokenConfigured ? 'green' : 'amber'} />
+          <Stat label="Proxy" value={cloudflare.proxied ? 'Ativo' : 'DNS only'} detail="proxied" icon={Activity} />
+        </div>
+      </Card>
+      <Card title="DNS Cloudflare" icon={Cloud}>
+        <form
+          className="grid gap-3 md:grid-cols-2"
+          onSubmit={event => {
+            event.preventDefault();
+            saveMutation.mutate(values);
+          }}
+        >
+          <div className="md:col-span-2">
+            <Checkbox label="Habilitar gerenciamento DNS" checked={values.enabled} onChange={value => setValue('enabled', value)} />
+          </div>
+          <Field label="API Token" type="password" value={values.apiToken} onChange={value => setValue('apiToken', value)} placeholder={cloudflare.tokenConfigured ? 'token ja configurado' : 'token Cloudflare'} />
+          <Field label="Zone ID" value={values.zoneId} onChange={value => setValue('zoneId', value)} placeholder="zone id" />
+          <Field label="Record ID" value={values.recordId} onChange={value => setValue('recordId', value)} placeholder="opcional" />
+          <Field label="Registro" value={values.recordName} onChange={value => setValue('recordName', value)} placeholder="cliente.tronsoft.app.br" />
+          <label className="block">
+            <span className="text-xs font-medium uppercase text-slate-500">Tipo</span>
+            <select value={values.recordType} onChange={event => setValue('recordType', event.target.value)} className="mt-1 w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100">
+              <option value="A">A</option>
+              <option value="AAAA">AAAA</option>
+              <option value="CNAME">CNAME</option>
+            </select>
+          </label>
+          <Field label="Destino" value={values.targetIp} onChange={value => setValue('targetIp', value)} placeholder="IP, VIP ou hostname" />
+          <Field label="TTL" type="number" value={values.ttl} onChange={value => setValue('ttl', Number(value))} placeholder="60" />
+          <div className="flex items-end">
+            <Checkbox label="Proxy Cloudflare" checked={values.proxied} onChange={value => setValue('proxied', value)} />
+          </div>
+          <div className="flex flex-wrap items-center gap-3 md:col-span-2">
+            <button disabled={saveMutation.isPending} className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-950 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50">
+              <Save className="h-4 w-4" />
+              Salvar
+            </button>
+            <button type="button" disabled={testMutation.isPending} onClick={() => testMutation.mutate()} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50">
+              <RefreshCw className="h-4 w-4" />
+              Testar token
+            </button>
+            <button type="button" disabled={syncMutation.isPending} onClick={() => syncMutation.mutate()} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50">
+              <Zap className="h-4 w-4" />
+              Sincronizar DNS
+            </button>
+          </div>
+          {saveMutation.isSuccess ? <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700 md:col-span-2">Configuracao salva.</div> : null}
+          {testMutation.isSuccess ? <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700 md:col-span-2">Token OK: {testMutation.data.zone}</div> : null}
+          {syncMutation.isSuccess ? <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700 md:col-span-2">DNS sincronizado.</div> : null}
+          {saveMutation.isError || testMutation.isError || syncMutation.isError ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 md:col-span-2">{saveMutation.error?.message || testMutation.error?.message || syncMutation.error?.message}</div> : null}
+        </form>
+      </Card>
+      <Card title="Padrao recomendado" icon={ShieldCheck}>
+        <div className="space-y-3 text-sm text-slate-700">
+          <p>Use um subdominio por cliente e aponte para o VIP quando houver HA.</p>
+          <p>Em cliente simples, o destino pode ser o IP fixo do servidor ou o endpoint definido pelo Cloudflare Tunnel.</p>
+          <p>O token deve ter permissao de editar DNS somente na zona usada pela TronSoft ou pela revenda.</p>
+        </div>
+      </Card>
       </div>
-    </Card>
   );
 }
 
