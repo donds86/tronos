@@ -108,6 +108,7 @@ fi
 usermod -aG docker "$USER_NAME" || true
 
 mkdir -p "$APP_DIR" "$ENV_DIR" "$APP_DIR/state" "$APP_DIR/config" "$APP_DIR/logs" /opt/tronfire-storage
+mkdir -p /opt/tronfire-storage/troncomanda/qr-static
 
 echo "Copiando arquivos..."
 rsync -a --delete \

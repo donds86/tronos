@@ -28,9 +28,12 @@
         "apps/troncomanda/docker-compose.yml"
       ],
       "projectName": "troncomanda",
-      "healthUrl": "http://127.0.0.1:8091/health",
+      "healthUrl": "http://127.0.0.1:8091/",
       "containers": [
-        "troncomanda"
+        "troncomanda_web",
+        "troncomanda_api",
+        "troncomanda_qr",
+        "troncomanda_cardapio_lite"
       ],
       "haAware": false
     }

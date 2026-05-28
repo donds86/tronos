@@ -7,6 +7,7 @@ APP_DIR="${TRONSOFTOS_APP_DIR:-$DEFAULT_APP_DIR}"
 ENV_DIR="/etc/tronsoftos"
 TRONSOFTOS_ENV="$ENV_DIR/tronsoftos.env"
 TRONFIRE_ENV="$APP_DIR/apps/tronfire/.env"
+TRONCOMANDA_ENV="$APP_DIR/apps/troncomanda/.env"
 MANAGED_APPS="$APP_DIR/config/managed-apps.json"
 CLUSTER_SECRETS="$APP_DIR/state/cluster-secrets.env"
 NODE_IDENTITY="$APP_DIR/state/node-identity.json"
@@ -365,6 +366,26 @@ GOOGLE_DRIVE_CLIENT_ID=
 GOOGLE_DRIVE_CLIENT_SECRET=
 EOF
 
+TRONCOMANDA_SECRET_KEY="$(openssl rand -base64 32 | tr -d '\n')"
+cat > "$TRONCOMANDA_ENV" <<EOF
+TZ=America/Sao_Paulo
+TRONCOMANDA_STORAGE_ROOT=/opt/tronfire-storage/troncomanda
+
+TRONCOMANDA_WEB_PORT=8091
+TRONCOMANDA_API_PORT=9000
+TRONCOMANDA_QR_PORT=8092
+TRONCOMANDA_CARDAPIO_PORT=8093
+TRONCOMANDA_LAN_HOST=$SERVER_IP
+TRONCOMANDA_PUBLIC_URL=http://$SERVER_IP:8091
+
+TRONCOMANDA_SECRET_KEY=$TRONCOMANDA_SECRET_KEY
+TRONCOMANDA_FIREBIRD_HOST=host.docker.internal
+TRONCOMANDA_FIREBIRD_USER=sysdba
+TRONCOMANDA_FIREBIRD_PASSWORD=$FIREBIRD_PASSWORD
+TRONCOMANDA_DATABASE_ALIAS=ERP_TRONSOFT
+TRONCOMANDA_DATABASE_CHARSET=win1252
+EOF
+
 cat > "$CLUSTER_SECRETS" <<EOF
 SESSION_SECRET=$SESSION_SECRET
 TRONSOFTOS_INTERNAL_TOKEN=$INTERNAL_TOKEN
@@ -415,8 +436,13 @@ if [ "$FIREBIRD_MODE" = "host" ]; then
       "composeFile": "apps/troncomanda/docker-compose.yml",
       "composeFiles": ["apps/troncomanda/docker-compose.yml"],
       "projectName": "troncomanda",
-      "healthUrl": "http://127.0.0.1:8091/health",
-      "containers": ["troncomanda"],
+      "healthUrl": "http://127.0.0.1:8091/",
+      "containers": [
+        "troncomanda_web",
+        "troncomanda_api",
+        "troncomanda_qr",
+        "troncomanda_cardapio_lite"
+      ],
       "haAware": false
     }
   ]
@@ -450,8 +476,13 @@ else
       "composeFile": "apps/troncomanda/docker-compose.yml",
       "composeFiles": ["apps/troncomanda/docker-compose.yml"],
       "projectName": "troncomanda",
-      "healthUrl": "http://127.0.0.1:8091/health",
-      "containers": ["troncomanda"],
+      "healthUrl": "http://127.0.0.1:8091/",
+      "containers": [
+        "troncomanda_web",
+        "troncomanda_api",
+        "troncomanda_qr",
+        "troncomanda_cardapio_lite"
+      ],
       "haAware": false
     }
   ]
@@ -459,12 +490,13 @@ else
 EOF
 fi
 
-chmod 600 "$TRONSOFTOS_ENV" "$TRONFIRE_ENV" "$CLUSTER_SECRETS" "$NODE_IDENTITY"
+chmod 600 "$TRONSOFTOS_ENV" "$TRONFIRE_ENV" "$TRONCOMANDA_ENV" "$CLUSTER_SECRETS" "$NODE_IDENTITY"
 
 line
 echo "Configuracao gravada com sucesso:"
 echo "- $TRONSOFTOS_ENV"
 echo "- $TRONFIRE_ENV"
+echo "- $TRONCOMANDA_ENV"
 echo "- $MANAGED_APPS"
 echo "- $CLUSTER_SECRETS"
 echo "- $NODE_IDENTITY"

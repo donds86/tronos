@@ -56,6 +56,7 @@ sync_ip_envs() {
   local server_ip="${address_cidr%%/*}"
   local tronsoftos_env="/etc/tronsoftos/tronsoftos.env"
   local tronfire_env="$app_dir/apps/tronfire/.env"
+  local troncomanda_env="$app_dir/apps/troncomanda/.env"
 
   valid_app_dir "$app_dir" || fail "Diretorio da aplicacao invalido"
 
@@ -75,6 +76,15 @@ sync_ip_envs() {
     tronfire_port="$(grep '^TRONFIRE_PANEL_PORT=' "$tronfire_env" | tail -n1 | cut -d= -f2-)"
   fi
   set_env_value "$tronfire_env" "PUBLIC_URL" "http://$server_ip:$tronfire_port"
+
+  if [ -f "$troncomanda_env" ]; then
+    set_env_value "$troncomanda_env" "TRONCOMANDA_LAN_HOST" "$server_ip"
+    local troncomanda_port="8091"
+    if grep -q '^TRONCOMANDA_WEB_PORT=' "$troncomanda_env"; then
+      troncomanda_port="$(grep '^TRONCOMANDA_WEB_PORT=' "$troncomanda_env" | tail -n1 | cut -d= -f2-)"
+    fi
+    set_env_value "$troncomanda_env" "TRONCOMANDA_PUBLIC_URL" "http://$server_ip:$troncomanda_port"
+  fi
 }
 
 apply_static() {

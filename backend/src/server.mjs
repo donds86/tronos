@@ -650,11 +650,12 @@ async function appsStatus() {
       fetchHealth(app.healthUrl)
     ]);
     const running = containers.filter(item => item.status === 'running').length;
+    const disabledAndStopped = app.enabled === false && running === 0;
     apps.push({
       ...publicApp(app),
       containers,
       health,
-      status: app.enabled === false ? 'disabled' : health.ok ? 'online' : running > 0 ? 'degraded' : 'offline'
+      status: disabledAndStopped ? 'disabled' : health.ok ? 'online' : running > 0 ? 'degraded' : 'offline'
     });
   }
   return apps;
