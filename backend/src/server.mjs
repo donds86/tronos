@@ -260,6 +260,31 @@ function putLocalNodeInRecovery(body = {}) {
   return { identity, lock, guard: clusterGuard() };
 }
 
+function ipv4ToInt(ip) {
+  const parts = String(ip || '').split('.').map(Number);
+  if (parts.length !== 4 || parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+  return parts.reduce((acc, part) => ((acc << 8) >>> 0) + part, 0) >>> 0;
+}
+
+function parseIpv4Cidr(value) {
+  const match = String(value || '').trim().match(/^((?:\d{1,3}\.){3}\d{1,3})(?:\/(\d{1,2}))?$/);
+  if (!match) return null;
+  const ipInt = ipv4ToInt(match[1]);
+  const prefixLength = Number(match[2] || 32);
+  if (ipInt === null || prefixLength < 0 || prefixLength > 32) return null;
+  const mask = prefixLength === 0 ? 0 : (0xffffffff << (32 - prefixLength)) >>> 0;
+  return { address: match[1], prefixLength, network: ipInt & mask, mask };
+}
+
+function sameIpv4Subnet(left, right) {
+  const a = parseIpv4Cidr(left);
+  const b = parseIpv4Cidr(right);
+  if (!a || !b) return null;
+  const prefixLength = Math.min(a.prefixLength, b.prefixLength);
+  const mask = prefixLength === 0 ? 0 : (0xffffffff << (32 - prefixLength)) >>> 0;
+  return (ipv4ToInt(a.address) & mask) === (ipv4ToInt(b.address) & mask);
+}
+
 function rawHaSyncSettings() {
   return {
     enabled: false,
@@ -1182,6 +1207,81 @@ async function hostNetworkStatus() {
   };
 }
 
+async function clusterNetworkImpact(proposedAddressCidr = '') {
+  const [network, syncSettings] = await Promise.all([
+    hostNetworkStatus(),
+    Promise.resolve(publicHaSyncSettings())
+  ]);
+  const identity = nodeIdentity();
+  const cloudflare = publicCloudflareSettings();
+  const currentInterface = network.defaultInterface || network.interfaces?.[0]?.name || null;
+  const currentAddress = network.interfaces
+    ?.find(item => item.name === currentInterface)?.addresses?.[0]
+    || network.interfaces?.[0]?.addresses?.[0]
+    || null;
+  const proposed = parseIpv4Cidr(proposedAddressCidr) || (currentAddress ? parseIpv4Cidr(currentAddress.cidr) : null);
+  const currentCidr = currentAddress?.cidr || null;
+  const proposedCidr = proposed ? `${proposed.address}/${proposed.prefixLength}` : '';
+  const vip = process.env.HA_VIP || null;
+  const vipCidr = vip && proposed ? `${vip}/${proposed.prefixLength}` : null;
+  const warnings = [];
+  const actions = [];
+  if (identity.deploymentMode === 'ha') {
+    if (!vip) {
+      warnings.push({ level: 'warning', message: 'HA está ativo, mas HA_VIP não está configurado.' });
+    } else if (proposed && sameIpv4Subnet(proposedCidr, vipCidr) === false) {
+      warnings.push({ level: 'danger', message: `VIP ${vip} não está na mesma faixa do IP ${proposedCidr}.` });
+      actions.push('Escolher um VIP na mesma rede do IP real do servidor.');
+    }
+    if (identity.nodeRole === 'primary' && syncSettings.enabled && !syncSettings.standbyHost) {
+      warnings.push({ level: 'warning', message: 'Sync HA está habilitado, mas o IP real do standby não foi informado.' });
+    }
+    if (identity.nodeRole === 'standby' && currentAddress && syncSettings.standbyHost === currentAddress.address) {
+      warnings.push({ level: 'warning', message: 'Este standby parece apontar o Sync HA para ele mesmo.' });
+    }
+  }
+  if (proposed && currentAddress && proposed.address !== currentAddress.address) {
+    actions.push('Atualizar o outro nó para usar este novo IP real em SSH/rsync.');
+    actions.push('Recriar/reiniciar containers para recarregar arquivos .env que dependem do IP.');
+    if (cloudflare.enabled && cloudflare.targetIp === currentAddress.address) {
+      warnings.push({ level: 'warning', message: 'Cloudflare aponta para o IP real atual; ao trocar IP, atualize o destino ou use o VIP.' });
+      actions.push('Atualizar Cloudflare para o novo IP real ou para o VIP.');
+    }
+  }
+  if (cloudflare.enabled && vip && cloudflare.targetIp && cloudflare.targetIp !== vip) {
+    warnings.push({ level: 'info', message: `Cloudflare aponta para ${cloudflare.targetIp}; em HA, o mais estável costuma ser apontar para o VIP ${vip}.` });
+  }
+  if (identity.deploymentMode === 'ha' && proposed && currentAddress && proposed.address !== currentAddress.address) {
+    warnings.push({ level: 'info', message: 'A troca do IP real não altera o VIP automaticamente.' });
+  }
+  return {
+    identity,
+    current: {
+      interface: currentInterface,
+      address: currentAddress?.address || null,
+      cidr: currentCidr,
+      gateway: network.gateway || null,
+      dns: network.dns || []
+    },
+    proposed: proposed ? { address: proposed.address, cidr: proposedCidr, prefixLength: proposed.prefixLength } : null,
+    vip,
+    vipSameSubnet: proposed && vip ? sameIpv4Subnet(proposedCidr, vipCidr) : null,
+    sync: {
+      enabled: syncSettings.enabled,
+      standbyHost: syncSettings.standbyHost || null,
+      sshUser: syncSettings.sshUser,
+      sshPort: syncSettings.sshPort
+    },
+    cloudflare: {
+      enabled: cloudflare.enabled,
+      recordName: cloudflare.recordName,
+      targetIp: cloudflare.targetIp
+    },
+    warnings,
+    actions: [...new Set(actions)]
+  };
+}
+
 function assertNetworkPayload(body) {
   const payload = {
     interfaceName: String(body.interfaceName || '').trim(),
@@ -1565,6 +1665,7 @@ async function handleApi(req, reply, url) {
   if (req.method === 'POST' && url.pathname === '/api/cluster/promotion/block') return json(reply, 200, blockClusterPromotion((await readBody(req).catch(() => ({}))).reason));
   if (req.method === 'POST' && url.pathname === '/api/cluster/activate-local') return json(reply, 200, activateLocalNode(await readBody(req).catch(() => ({}))));
   if (req.method === 'POST' && url.pathname === '/api/cluster/recovery-local') return json(reply, 200, putLocalNodeInRecovery(await readBody(req).catch(() => ({}))));
+  if (req.method === 'GET' && url.pathname === '/api/cluster/network-impact') return json(reply, 200, await clusterNetworkImpact(url.searchParams.get('proposed') || ''));
   if (req.method === 'GET' && url.pathname === '/api/cluster/sync') return json(reply, 200, publicHaSyncSettings());
   if (req.method === 'PATCH' && url.pathname === '/api/cluster/sync') return json(reply, 200, writeHaSyncSettings(await readBody(req)));
   if (req.method === 'POST' && url.pathname === '/api/cluster/sync/run') return json(reply, 202, { ok: true, job: startHaSync() });

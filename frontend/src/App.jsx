@@ -520,9 +520,16 @@ function ClusterView({ dashboard }) {
   const lockQuery = useQuery({ queryKey: ['cluster-lock'], queryFn: () => api('/api/cluster/lock') });
   const guardQuery = useQuery({ queryKey: ['cluster-guard'], queryFn: () => api('/api/cluster/guard'), refetchInterval: 5000 });
   const syncQuery = useQuery({ queryKey: ['ha-sync-settings'], queryFn: () => api('/api/cluster/sync') });
+  const [networkProposal, setNetworkProposal] = useState('');
+  const networkImpactQuery = useQuery({
+    queryKey: ['cluster-network-impact', networkProposal],
+    queryFn: () => api(`/api/cluster/network-impact${networkProposal ? `?proposed=${encodeURIComponent(networkProposal)}` : ''}`),
+    refetchInterval: 10000
+  });
   const identity = identityQuery.data || cluster.identity || {};
   const lock = lockQuery.data || cluster.lock || {};
   const guard = guardQuery.data || cluster.guard || {};
+  const networkImpact = networkImpactQuery.data || {};
   const sync = syncQuery.data || {};
   const [form, setForm] = useState(null);
   const [lockForm, setLockForm] = useState(null);
@@ -726,6 +733,44 @@ function ClusterView({ dashboard }) {
             {saveMutation.isError ? <span className="text-sm text-red-700">{saveMutation.error?.message}</span> : null}
           </div>
         </form>
+      </Card>
+      <Card title="Impacto de rede HA" icon={Network} action={<StatusPill value={networkImpact.vipSameSubnet === false ? 'warning' : 'online'} />}>
+        <div className="grid gap-3 text-sm">
+          {[
+            ['Interface', networkImpact.current?.interface || '-'],
+            ['IP real atual', networkImpact.current?.cidr || '-'],
+            ['Novo IP analisado', networkImpact.proposed?.cidr || networkImpact.current?.cidr || '-'],
+            ['VIP', networkImpact.vip || 'nao configurado'],
+            ['VIP na mesma rede', networkImpact.vipSameSubnet === null || networkImpact.vipSameSubnet === undefined ? '-' : networkImpact.vipSameSubnet ? 'sim' : 'nao'],
+            ['Sync HA standby', networkImpact.sync?.standbyHost || 'nao configurado'],
+            ['Cloudflare destino', networkImpact.cloudflare?.targetIp || 'nao configurado']
+          ].map(([label, value]) => (
+            <div key={label} className="flex items-center justify-between gap-4 border-b border-slate-100 pb-2">
+              <span className="text-slate-500">{label}</span>
+              <span className="text-right font-medium text-slate-950">{value}</span>
+            </div>
+          ))}
+        </div>
+        <div className="mt-4">
+          <Field label="Simular novo IP/CIDR real do host" value={networkProposal} onChange={setNetworkProposal} placeholder={networkImpact.current?.cidr || '192.168.1.152/24'} />
+        </div>
+        {networkImpact.warnings?.length ? (
+          <div className="mt-4 grid gap-2">
+            {networkImpact.warnings.map((item, index) => (
+              <div key={`${item.message}-${index}`} className={`rounded-md border px-3 py-2 text-sm ${item.level === 'danger' ? 'border-red-200 bg-red-50 text-red-700' : item.level === 'warning' ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-sky-200 bg-sky-50 text-sky-800'}`}>
+                {item.message}
+              </div>
+            ))}
+          </div>
+        ) : <div className="mt-4 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">Nenhum impacto critico detectado para a configuracao atual.</div>}
+        {networkImpact.actions?.length ? (
+          <div className="mt-4">
+            <div className="mb-2 text-xs font-medium uppercase text-slate-500">Ajustes sugeridos</div>
+            <ul className="space-y-1 text-sm text-slate-700">
+              {networkImpact.actions.map(item => <li key={item}>- {item}</li>)}
+            </ul>
+          </div>
+        ) : null}
       </Card>
       <Card title="Controle de promocao" icon={ShieldCheck} action={<StatusPill value={lockValues.allow_promotion ? 'warning' : 'disabled'} />}>
         <form
