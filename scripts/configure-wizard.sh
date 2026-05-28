@@ -19,6 +19,22 @@ for secrets_file in "$APP_DIR/config/installer-secrets.env" "$ENV_DIR/installer-
   fi
 done
 
+decrypt_installer_secret() {
+  local encrypted="$1"
+  local key="$2"
+  if [ -z "$encrypted" ] || [ -z "$key" ]; then
+    return 1
+  fi
+  SECRET_ENC="$encrypted" SECRET_KEY="$key" node -e '
+const crypto = require("crypto");
+const payload = JSON.parse(Buffer.from(process.env.SECRET_ENC, "base64").toString("utf8"));
+const key = crypto.createHash("sha256").update(process.env.SECRET_KEY).digest();
+const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(payload.iv, "base64"));
+decipher.setAuthTag(Buffer.from(payload.tag, "base64"));
+process.stdout.write(Buffer.concat([decipher.update(Buffer.from(payload.data, "base64")), decipher.final()]).toString("utf8"));
+'
+}
+
 if [ "$(id -u)" -ne 0 ]; then
   echo "Execute como root: sudo scripts/configure-wizard.sh" >&2
   exit 77
@@ -343,6 +359,16 @@ line
 GHCR_REGISTRY="${TRONSOFTOS_GHCR_REGISTRY:-${GHCR_REGISTRY:-ghcr.io}}"
 GHCR_USER="${TRONSOFTOS_GHCR_USER:-${GHCR_USER:-}}"
 GHCR_TOKEN="${TRONSOFTOS_GHCR_TOKEN:-${GHCR_TOKEN:-}}"
+GHCR_TOKEN_ENC="${TRONSOFTOS_GHCR_TOKEN_ENC:-${GHCR_TOKEN_ENC:-}}"
+GHCR_TOKEN_KEY="${TRONSOFTOS_GHCR_TOKEN_KEY:-${GHCR_TOKEN_KEY:-}}"
+if [ -z "$GHCR_TOKEN" ] && [ -n "$GHCR_TOKEN_ENC" ] && [ -n "$GHCR_TOKEN_KEY" ]; then
+  if GHCR_TOKEN="$(decrypt_installer_secret "$GHCR_TOKEN_ENC" "$GHCR_TOKEN_KEY")"; then
+    echo "Token GHCR descriptografado para login da instalacao."
+  else
+    echo "Aviso: nao foi possivel descriptografar token GHCR." >&2
+    GHCR_TOKEN=""
+  fi
+fi
 if [ -n "$GHCR_USER" ] && [ -n "$GHCR_TOKEN" ]; then
   mkdir -p "$APP_DIR/state/docker-config"
   chmod 700 "$APP_DIR/state/docker-config"
@@ -351,10 +377,10 @@ if [ -n "$GHCR_USER" ] && [ -n "$GHCR_TOKEN" ]; then
   else
     echo "Aviso: login $GHCR_REGISTRY falhou. Verifique as credenciais de instalacao." >&2
   fi
-  unset GHCR_TOKEN TRONSOFTOS_GHCR_TOKEN
+  unset GHCR_TOKEN TRONSOFTOS_GHCR_TOKEN GHCR_TOKEN_ENC GHCR_TOKEN_KEY TRONSOFTOS_GHCR_TOKEN_ENC TRONSOFTOS_GHCR_TOKEN_KEY
 else
   echo "Login GHCR nao configurado por credenciais de instalacao."
-  echo "Para imagens privadas, forneca TRONSOFTOS_GHCR_USER/TRONSOFTOS_GHCR_TOKEN ou $APP_DIR/config/installer-secrets.env antes de instalar."
+  echo "Para imagens privadas, forneca credenciais em $APP_DIR/config/installer-secrets.env antes de instalar."
 fi
 
 cat > "$TRONFIRE_ENV" <<EOF

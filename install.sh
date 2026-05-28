@@ -95,7 +95,7 @@ fi
 
 echo "Instalando pacotes base..."
 apt-get update
-apt-get install -y ca-certificates curl gnupg rsync openssh-client openssh-server keepalived rclone nodejs npm sudo
+apt-get install -y ca-certificates curl gnupg openssl rsync openssh-client openssh-server keepalived rclone nodejs npm sudo
 install_docker
 
 echo "Criando usuario e diretorios..."
