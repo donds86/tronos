@@ -4,7 +4,6 @@ import fs from 'node:fs';
 import { PrismaClient } from '@prisma/client';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { uploadBackupToGoogleDrive } from './google-drive-oauth.js';
 
 const prisma = new PrismaClient();
 const execFileAsync = promisify(execFile);
@@ -360,32 +359,8 @@ async function collectMetrics() {
 }
 
 async function uploadBackupJobToExternal(db, jobId, backupPath) {
-  const setting = await prisma.systemSetting.findUnique({ where: { key: 'GOOGLE_DRIVE_BACKUP' } });
-  const settings = setting?.value ? JSON.parse(setting.value) : {};
-  if (!settings.enabled) {
-    await prisma.backupJob.update({ where: { id: jobId }, data: { driveStatus: 'DISABLED' } });
-    return;
-  }
-  await prisma.backupJob.update({ where: { id: jobId }, data: { driveStatus: 'UPLOADING', driveErrorMessage: null } });
-  try {
-    const uploaded = await uploadBackupToGoogleDrive(prisma, backupPath);
-    await prisma.backupJob.update({
-      where: { id: jobId },
-      data: {
-        driveStatus: 'UPLOADED',
-        driveFileId: uploaded.fileId || null,
-        driveFileName: uploaded.fileName,
-        driveWebLink: uploaded.webViewLink || null,
-        driveUploadedAt: new Date(),
-        driveErrorMessage: null
-      }
-    });
-    console.log(`[worker] Google Drive upload OK: ${db.alias} ${uploaded.fileId || uploaded.fileName}`);
-  } catch (err) {
-    await prisma.backupJob.update({ where: { id: jobId }, data: { driveStatus: 'FAILED', driveErrorMessage: err.message } });
-    await createAlertOnce(`BACKUP_EXTERNAL_UPLOAD_FAILED_${db.alias}`, 'WARNING', `Backup local OK, mas envio ao Google Drive falhou: ${db.name}`);
-    console.error(`[worker] Google Drive upload erro: ${db.alias}`, err.message);
-  }
+  await prisma.backupJob.update({ where: { id: jobId }, data: { driveStatus: 'TRONSOFTOS', driveErrorMessage: null } });
+  console.log(`[worker] upload externo gerenciado pelo TronSoftOS: ${db.alias} ${backupPath}`);
 }
 
 async function runBackup(db, reason = 'AUTO') {

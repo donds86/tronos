@@ -19,14 +19,6 @@ import {
   stopCloudflareTunnel,
   writeCloudflareTunnelSettings
 } from './cloudflare-tunnel.js';
-import {
-  completeGoogleDriveOAuth,
-  createGoogleDriveAuthUrl,
-  readGoogleDriveSettings,
-  testGoogleDriveConnection,
-  uploadBackupToGoogleDrive,
-  writeGoogleDriveSettings
-} from './google-drive-oauth.js';
 
 const app = Fastify({ logger: true, bodyLimit: 1024 * 1024 * 1024 });
 const storageRoot = process.env.STORAGE_ROOT || '/opt/tronsoftOS/storage/tronfire';
@@ -469,33 +461,12 @@ function readBackupManifest(manifestPath) {
 }
 
 async function uploadBackupJobToExternal(req, db, jobId, backupPath) {
-  const settings = await readGoogleDriveSettings(prisma);
-  if (!settings.enabled) {
-    await prisma.backupJob.update({ where: { id: jobId }, data: { driveStatus: 'DISABLED' } });
-    return { skipped: true };
-  }
-  await prisma.backupJob.update({ where: { id: jobId }, data: { driveStatus: 'UPLOADING', driveErrorMessage: null } });
-  try {
-    const uploaded = await uploadBackupToGoogleDrive(prisma, backupPath);
-    await prisma.backupJob.update({
-      where: { id: jobId },
-      data: {
-        driveStatus: 'UPLOADED',
-        driveFileId: uploaded.fileId || null,
-        driveFileName: uploaded.fileName,
-        driveWebLink: uploaded.webViewLink || null,
-        driveUploadedAt: new Date(),
-        driveErrorMessage: null
-      }
-    });
-    await audit(req, 'BACKUP_GOOGLE_DRIVE_UPLOADED', { entityType: 'backup', entityId: jobId, details: { database: db.alias, fileId: uploaded.fileId } });
-    return uploaded;
-  } catch (err) {
-    await prisma.backupJob.update({ where: { id: jobId }, data: { driveStatus: 'FAILED', driveErrorMessage: err.message } });
-    await createAlertOnce(`BACKUP_EXTERNAL_UPLOAD_FAILED_${db.alias}`, 'WARNING', `Backup local OK, mas envio ao Google Drive falhou: ${db.name}`);
-    await audit(req, 'BACKUP_GOOGLE_DRIVE_UPLOAD_FAILED', { entityType: 'backup', entityId: jobId, details: { database: db.alias, error: err.message } });
-    return { skipped: false, error: err.message };
-  }
+  await prisma.backupJob.update({
+    where: { id: jobId },
+    data: { driveStatus: 'TRONSOFTOS', driveErrorMessage: null }
+  });
+  await audit(req, 'BACKUP_EXTERNAL_MANAGED_BY_TRONSOFTOS', { entityType: 'backup', entityId: jobId, details: { database: db.alias, backupPath } });
+  return { skipped: true, managedBy: 'TronSoftOS' };
 }
 
 app.get('/health', async () => ({ ok: true, app: 'TronFire', version: '0.1.0', deploymentMode, nodeRole }));
@@ -591,48 +562,33 @@ app.post('/api/settings/cloudflare-tunnel/:action', { preHandler: requireAdmin }
 });
 
 app.get('/api/settings/google-drive', { preHandler: requireOperator }, async (req) => {
-  return readGoogleDriveSettings(prisma, req);
+  return {
+    enabled: false,
+    connected: false,
+    managedBy: 'TronSoftOS',
+    message: 'Backup em nuvem gerenciado pelo TronSoftOS'
+  };
 });
 
-app.patch('/api/settings/google-drive', { preHandler: requireOperator }, async (req) => {
-  const setting = await writeGoogleDriveSettings(prisma, req.body || {}, req.user);
-  await audit(req, 'GOOGLE_DRIVE_BACKUP_UPDATED', {
-    entityType: 'setting',
-    entityId: 'GOOGLE_DRIVE_BACKUP',
-    details: { enabled: setting.enabled, folderName: setting.folderName, connected: setting.connected }
-  });
-  return setting;
+app.patch('/api/settings/google-drive', { preHandler: requireOperator }, async () => {
+  return {
+    enabled: false,
+    connected: false,
+    managedBy: 'TronSoftOS',
+    message: 'Backup em nuvem gerenciado pelo TronSoftOS'
+  };
 });
 
-app.post('/api/settings/google-drive/test', { preHandler: requireOperator }, async (req, reply) => {
-  try {
-    return await testGoogleDriveConnection(prisma);
-  } catch (err) {
-    return reply.code(400).send({ error: err.message });
-  }
+app.post('/api/settings/google-drive/test', { preHandler: requireOperator }, async () => {
+  return { ok: false, managedBy: 'TronSoftOS', message: 'Teste rclone/Google Drive deve ser feito no TronSoftOS' };
 });
 
 app.post('/api/settings/google-drive/oauth/start', { preHandler: requireOperator }, async (req, reply) => {
-  try {
-    const out = await createGoogleDriveAuthUrl(prisma, req);
-    await audit(req, 'GOOGLE_DRIVE_OAUTH_STARTED', {
-      entityType: 'setting',
-      entityId: 'GOOGLE_DRIVE_BACKUP',
-      details: { redirectUri: out.redirectUri }
-    });
-    return out;
-  } catch (err) {
-    return reply.code(400).send({ error: err.message });
-  }
+  return reply.code(410).send({ error: 'Google Drive e rclone agora sao configurados no TronSoftOS' });
 });
 
 app.get('/api/settings/google-drive/oauth/callback', async (req, reply) => {
-  try {
-    const out = await completeGoogleDriveOAuth(prisma, req.query || {}, req);
-    reply.type('text/html; charset=utf-8').send(`<!doctype html><meta charset="utf-8"><title>TronFire</title><body style="font-family:Arial,sans-serif;margin:40px"><h2>Google Drive conectado</h2><p>Conta autorizada${out.accountEmail ? `: ${out.accountEmail}` : ''}.</p><p>Volte para o TronFire e clique em Testar envio.</p></body>`);
-  } catch (err) {
-    reply.code(400).type('text/html; charset=utf-8').send(`<!doctype html><meta charset="utf-8"><title>TronFire</title><body style="font-family:Arial,sans-serif;margin:40px"><h2>Falha ao conectar Google Drive</h2><p>${String(err.message || err).replace(/[<>&"]/g, '')}</p></body>`);
-  }
+  reply.type('text/html; charset=utf-8').send('<!doctype html><meta charset="utf-8"><title>TronFire</title><body style="font-family:Arial,sans-serif;margin:40px"><h2>Google Drive gerenciado pelo TronSoftOS</h2><p>Configure o backup em nuvem no painel TronSoftOS.</p></body>');
 });
 
 app.get('/api/preflight', { preHandler: requireAuth }, async () => runPreflight());

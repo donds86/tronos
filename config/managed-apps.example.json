@@ -10,6 +10,7 @@
       ],
       "projectName": "tronfire",
       "healthUrl": "http://127.0.0.1:8081/health",
+      "publicUrl": "http://127.0.0.1:8081",
       "containers": [
         "tronfire_backend",
         "tronfire_worker",
@@ -29,6 +30,7 @@
       ],
       "projectName": "troncomanda",
       "healthUrl": "http://127.0.0.1:8091/",
+      "publicUrl": "http://127.0.0.1:8091",
       "containers": [
         "troncomanda_web",
         "troncomanda_api",

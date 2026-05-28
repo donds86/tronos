@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
@@ -23,6 +23,9 @@ const rcloneSettingsPath = process.env.TRONSOFTOS_RCLONE_SETTINGS || path.join(s
 const googleCredentialsPath = process.env.TRONSOFTOS_GOOGLE_CREDENTIALS || path.join(stateDir, 'google-drive-credentials.json');
 const googleOauthDir = process.env.TRONSOFTOS_GOOGLE_OAUTH_DIR || path.join(stateDir, 'google-oauth');
 const frontendDist = process.env.TRONSOFTOS_FRONTEND_DIST || path.join(appRoot, 'frontend/dist');
+const actionJobs = new Map();
+const maxActionLogLength = 1024 * 128;
+let rcloneQuotaCache = { key: null, checkedAt: 0, value: null };
 
 function json(reply, status, body) {
   const payload = JSON.stringify(body, null, 2);
@@ -478,6 +481,41 @@ async function rcloneUploadTest() {
   }
 }
 
+async function rcloneAbout() {
+  const settings = rawRcloneSettings();
+  if (!settings.remote || !settings.configConfigured) return null;
+  const cacheKey = `${settings.bin || '/usr/bin/rclone'}|${settings.config || defaultRcloneConfigPath()}|${rcloneTarget(settings)}`;
+  if (rcloneQuotaCache.key === cacheKey && Date.now() - rcloneQuotaCache.checkedAt < 5 * 60 * 1000) {
+    return rcloneQuotaCache.value;
+  }
+  try {
+    const out = await run(settings.bin || '/usr/bin/rclone', ['about', rcloneTarget(settings), '--json', '--config', settings.config || defaultRcloneConfigPath()], {
+      timeout: 60_000,
+      maxBuffer: 1024 * 1024 * 2
+    });
+    const quota = JSON.parse(out.stdout || '{}');
+    const total = Number(quota.total || 0);
+    const used = Number(quota.used || 0);
+    const free = Number(quota.free || 0);
+    const percentUsed = total > 0 ? Math.round((used / total) * 1000) / 10 : null;
+    const value = {
+      ok: true,
+      target: rcloneTarget(settings),
+      total,
+      used,
+      free,
+      percentUsed,
+      raw: quota
+    };
+    rcloneQuotaCache = { key: cacheKey, checkedAt: Date.now(), value };
+    return value;
+  } catch (err) {
+    const value = { ok: false, target: rcloneTarget(settings), error: err.message };
+    rcloneQuotaCache = { key: cacheKey, checkedAt: Date.now(), value };
+    return value;
+  }
+}
+
 function managedConfig() {
   return readJson(configPath, readJson(fallbackConfigPath, { apps: [] }));
 }
@@ -490,9 +528,25 @@ function publicApp(app) {
     projectName: app.projectName,
     composeFiles: app.composeFiles || (app.composeFile ? [app.composeFile] : []),
     healthUrl: app.healthUrl,
+    publicUrl: appAccessUrl(app),
     containers: app.containers || [],
     haAware: !!app.haAware
   };
+}
+
+function appAccessUrl(app) {
+  if (app.publicUrl || app.accessUrl) return app.publicUrl || app.accessUrl;
+  if (app.name === 'tronfire') {
+    const env = parseEnvFile(path.join(appRoot, 'apps/tronfire/.env'));
+    if (env.PUBLIC_URL) return env.PUBLIC_URL;
+    if (env.TRONFIRE_LAN_HOST && env.TRONFIRE_PANEL_PORT) return `http://${env.TRONFIRE_LAN_HOST}:${env.TRONFIRE_PANEL_PORT}`;
+  }
+  if (app.name === 'troncomanda') {
+    const env = parseEnvFile(path.join(appRoot, 'apps/troncomanda/.env'));
+    if (env.TRONCOMANDA_PUBLIC_URL) return env.TRONCOMANDA_PUBLIC_URL;
+    if (env.TRONCOMANDA_LAN_HOST && env.TRONCOMANDA_WEB_PORT) return `http://${env.TRONCOMANDA_LAN_HOST}:${env.TRONCOMANDA_WEB_PORT}`;
+  }
+  return app.healthUrl ? app.healthUrl.replace(/\/health\/?$/, '/') : null;
 }
 
 async function run(command, args, options = {}) {
@@ -680,7 +734,7 @@ function clusterStatus() {
   };
 }
 
-function backupStatus() {
+async function backupStatus() {
   const backupDir = process.env.FIREBIRD_BACKUP_DIR || '/opt/tronfire-storage/firebird/backups';
   const rclone = publicRcloneSettings();
   const files = [];
@@ -696,9 +750,11 @@ function backupStatus() {
     // Directory may not exist before install.
   }
   files.sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
+  const quota = await rcloneAbout();
   return {
     backupDir,
     rclone,
+    quota,
     recentFiles: files.slice(0, 20)
   };
 }
@@ -987,11 +1043,14 @@ function exportPairingFile(reply) {
 async function dashboard() {
   const [apps] = await Promise.all([appsStatus()]);
   const cluster = clusterStatus();
-  const backups = backupStatus();
+  const backups = await backupStatus();
   const alerts = [];
   if (apps.some(app => app.status === 'offline' && app.enabled)) alerts.push({ severity: 'critical', message: 'App gerenciado offline' });
   if (cluster.mode === 'ha' && !cluster.lock) alerts.push({ severity: 'warning', message: 'Cluster HA sem cluster-lock' });
   if (!backups.rclone.remote) alerts.push({ severity: 'warning', message: 'Remote rclone nao configurado' });
+  if (backups.quota?.percentUsed >= 97) alerts.push({ severity: 'critical', message: `Google Drive com ${backups.quota.percentUsed}% de uso` });
+  else if (backups.quota?.percentUsed >= 90) alerts.push({ severity: 'warning', message: `Google Drive com ${backups.quota.percentUsed}% de uso` });
+  if (backups.quota && backups.quota.ok === false) alerts.push({ severity: 'warning', message: `Falha ao consultar espaco do Google Drive: ${backups.quota.error}` });
   return {
     generatedAt: new Date().toISOString(),
     cluster,
@@ -1081,7 +1140,7 @@ async function diagnostics() {
     },
     firebird,
     network,
-    backups: backupStatus()
+    backups: await backupStatus()
   };
 }
 
@@ -1111,6 +1170,81 @@ async function appAction(app, action) {
   const out = await run('docker', args, { timeout: 1000 * 60 * 10, maxBuffer: 1024 * 1024 * 10 });
   appendEvent(`APP_${action.toUpperCase()}`, { app: app.name, stdout: out.stdout, stderr: out.stderr });
   return out;
+}
+
+function appActionCommand(app, action) {
+  if (!['up', 'stop', 'restart', 'pull'].includes(action)) throw new Error('invalid action');
+  if (app.type !== 'compose') throw new Error('only compose apps are supported');
+  const composeFiles = app.composeFiles || (app.composeFile ? [app.composeFile] : []);
+  if (!composeFiles.length) throw new Error('compose file not configured');
+  const args = ['compose', '-p', app.projectName || app.name];
+  for (const composeFile of composeFiles) {
+    args.push('-f', path.resolve(appRoot, composeFile));
+  }
+  if (action === 'up') args.push('up', '-d');
+  else if (action === 'restart') args.push('restart');
+  else args.push(action);
+  return { command: 'docker', args };
+}
+
+function publicActionJob(job) {
+  return {
+    id: job.id,
+    app: job.app,
+    action: job.action,
+    command: job.command,
+    args: job.args,
+    status: job.status,
+    startedAt: job.startedAt,
+    finishedAt: job.finishedAt,
+    exitCode: job.exitCode,
+    error: job.error,
+    stdout: job.stdout,
+    stderr: job.stderr
+  };
+}
+
+function appendActionLog(job, stream, chunk) {
+  job[stream] += chunk.toString();
+  if (job[stream].length > maxActionLogLength) {
+    job[stream] = job[stream].slice(job[stream].length - maxActionLogLength);
+  }
+}
+
+function startAppAction(app, action) {
+  const { command, args } = appActionCommand(app, action);
+  const id = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
+  const job = {
+    id,
+    app: app.name,
+    action,
+    command,
+    args,
+    status: 'running',
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    exitCode: null,
+    error: null,
+    stdout: '',
+    stderr: ''
+  };
+  actionJobs.set(id, job);
+  const child = spawn(command, args, { cwd: appRoot, windowsHide: true });
+  child.stdout.on('data', chunk => appendActionLog(job, 'stdout', chunk));
+  child.stderr.on('data', chunk => appendActionLog(job, 'stderr', chunk));
+  child.on('error', err => {
+    job.status = 'failed';
+    job.error = err.message;
+    job.finishedAt = new Date().toISOString();
+    appendEvent(`APP_${action.toUpperCase()}_FAILED`, { app: app.name, error: err.message });
+  });
+  child.on('close', code => {
+    job.exitCode = code;
+    job.status = code === 0 ? 'success' : 'failed';
+    job.finishedAt = new Date().toISOString();
+    appendEvent(`APP_${action.toUpperCase()}`, { app: app.name, exitCode: code, stdout: job.stdout, stderr: job.stderr });
+  });
+  return publicActionJob(job);
 }
 
 function contentTypeFor(filePath) {
@@ -1144,10 +1278,16 @@ async function handleApi(req, reply, url) {
   if (req.method === 'GET' && url.pathname === '/api/dashboard') return json(reply, 200, await dashboard());
   if (req.method === 'GET' && url.pathname === '/api/diagnostics') return json(reply, 200, await diagnostics());
   if (req.method === 'GET' && url.pathname === '/api/apps') return json(reply, 200, { apps: await appsStatus() });
+  const actionJobMatch = url.pathname.match(/^\/api\/actions\/([^/]+)$/);
+  if (req.method === 'GET' && actionJobMatch) {
+    const job = actionJobs.get(actionJobMatch[1]);
+    if (!job) return json(reply, 404, { error: 'action not found' });
+    return json(reply, 200, publicActionJob(job));
+  }
   if (req.method === 'GET' && url.pathname === '/api/cluster') return json(reply, 200, clusterStatus());
   if (req.method === 'GET' && url.pathname === '/api/node-identity') return json(reply, 200, nodeIdentity());
   if (req.method === 'PATCH' && url.pathname === '/api/node-identity') return json(reply, 200, writeNodeIdentity(await readBody(req)));
-  if (req.method === 'GET' && url.pathname === '/api/backups') return json(reply, 200, backupStatus());
+  if (req.method === 'GET' && url.pathname === '/api/backups') return json(reply, 200, await backupStatus());
   if (req.method === 'GET' && url.pathname === '/api/backups/rclone') return json(reply, 200, publicRcloneSettings());
   if (req.method === 'PATCH' && url.pathname === '/api/backups/rclone') return json(reply, 200, writeRcloneSettings(await readBody(req)));
   if (req.method === 'POST' && url.pathname === '/api/backups/rclone/test') return json(reply, 200, await rcloneTest());
@@ -1176,8 +1316,7 @@ async function handleApi(req, reply, url) {
     await readBody(req).catch(() => ({}));
     const app = findApp(actionMatch[1]);
     if (!app) return json(reply, 404, { error: 'app not found' });
-    const out = await appAction(app, actionMatch[2]);
-    return json(reply, 200, { ok: true, stdout: out.stdout, stderr: out.stderr });
+    return json(reply, 202, { ok: true, job: startAppAction(app, actionMatch[2]) });
   }
   return json(reply, 404, { error: 'not found' });
 }

@@ -240,11 +240,9 @@ Se o `tronsoftOS` ja possui Cloudflare/proxy, encaminhe o dominio externo para `
 
 Não exponha a porta 3050 na internet.
 
-## Backup externo com Google Drive
+## Backup externo
 
-O TronFire pode enviar backups `.gbk.gz` bem-sucedidos para Google Drive usando OAuth. O cliente autoriza a conta Google pelo proprio navegador do TronFire; nao precisa rclone na maquina do cliente.
-
-Antes, no Google Cloud, crie uma credencial OAuth Web, ative a Google Drive API e cadastre a URL de retorno mostrada na tela do TronFire.
+O TronFire gera e valida os backups locais em `/firebird/backups`. O envio para Google Drive/rclone e centralizado no TronSoftOS para manter uma unica configuracao por servidor.
 
 ### URL publica com Cloudflare Tunnel
 
@@ -262,18 +260,7 @@ No TronFire:
 2. Informe a URL publica, por exemplo `https://cliente.seudominio.com.br`.
 3. Cole o token do Tunnel.
 4. Clique em **Iniciar tunnel**.
-5. Use a URL de retorno exibida em **Google Drive** nas URIs autorizadas do OAuth Google.
-
-Fluxo no painel:
-
-1. Acesse **Configuracoes > Google Drive**.
-2. Informe Client ID e Client Secret, ou cole o JSON OAuth baixado do Google Cloud.
-3. Confira se a URL de retorno da tela esta cadastrada nas URIs autorizadas do OAuth.
-4. Clique em **Conectar conta Google**.
-5. Autorize a conta Google do cliente e volte ao TronFire.
-6. Clique em **Testar envio**.
-
-O backup local continua sendo salvo primeiro em `/firebird/backups`. Se o envio externo falhar, o backup local permanece `SUCCESS` e o campo externo fica com erro separado.
+5. Configure rclone/Google Drive no painel TronSoftOS, em **Backups**.
 
 ## Próximas etapas recomendadas
 

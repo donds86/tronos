@@ -362,8 +362,6 @@ FIREBIRD_PASSWORD=$FIREBIRD_PASSWORD
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 SESSION_SECRET=$SESSION_SECRET
 
-GOOGLE_DRIVE_CLIENT_ID=
-GOOGLE_DRIVE_CLIENT_SECRET=
 EOF
 
 TRONCOMANDA_SECRET_KEY="$(openssl rand -base64 32 | tr -d '\n')"
@@ -421,6 +419,7 @@ if [ "$FIREBIRD_MODE" = "host" ]; then
       ],
       "projectName": "tronfire",
       "healthUrl": "http://127.0.0.1:$TRONFIRE_PANEL_PORT/health",
+      "publicUrl": "http://$SERVER_IP:$TRONFIRE_PANEL_PORT",
       "containers": [
         "tronfire_backend",
         "tronfire_worker",
@@ -437,6 +436,7 @@ if [ "$FIREBIRD_MODE" = "host" ]; then
       "composeFiles": ["apps/troncomanda/docker-compose.yml"],
       "projectName": "troncomanda",
       "healthUrl": "http://127.0.0.1:8091/",
+      "publicUrl": "http://$SERVER_IP:8091",
       "containers": [
         "troncomanda_web",
         "troncomanda_api",
@@ -460,6 +460,7 @@ else
       "composeFiles": ["apps/tronfire/docker-compose.yml"],
       "projectName": "tronfire",
       "healthUrl": "http://127.0.0.1:$TRONFIRE_PANEL_PORT/health",
+      "publicUrl": "http://$SERVER_IP:$TRONFIRE_PANEL_PORT",
       "containers": [
         "tronfire_backend",
         "tronfire_worker",
@@ -477,6 +478,7 @@ else
       "composeFiles": ["apps/troncomanda/docker-compose.yml"],
       "projectName": "troncomanda",
       "healthUrl": "http://127.0.0.1:8091/",
+      "publicUrl": "http://$SERVER_IP:8091",
       "containers": [
         "troncomanda_web",
         "troncomanda_api",

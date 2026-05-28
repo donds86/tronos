@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Activity,
@@ -6,6 +6,7 @@ import {
   Boxes,
   Cloud,
   Database,
+  ExternalLink,
   FileClock,
   CheckCircle2,
   Gauge,
@@ -82,9 +83,10 @@ const fallbackDashboard = {
       haAware: false
     }
   ],
-  backups: {
+    backups: {
     backupDir: '/opt/tronfire-storage/firebird/backups',
     rclone: { remote: null, path: null, uploadOnlyRole: 'primary' },
+    quota: null,
     recentFiles: []
   },
   cloudflare: { recordName: null, recordType: 'A', targetIp: null, tokenConfigured: false },
@@ -146,6 +148,19 @@ function statusClass(status) {
 
 function StatusPill({ value }) {
   return <span className={`inline-flex items-center rounded border px-2 py-1 text-xs font-medium ${statusClass(value)}`}>{value || 'unknown'}</span>;
+}
+
+function formatBytes(value) {
+  const size = Number(value || 0);
+  if (!size) return '-';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let current = size;
+  let unit = 0;
+  while (current >= 1024 && unit < units.length - 1) {
+    current /= 1024;
+    unit += 1;
+  }
+  return `${current >= 10 || unit === 0 ? Math.round(current) : current.toFixed(1)} ${units[unit]}`;
 }
 
 function diagnosticIcon(status) {
@@ -295,30 +310,54 @@ function DashboardView({ dashboard }) {
   );
 }
 
-function AppsView({ dashboard, onAction, actionPending }) {
+function AppsView({ dashboard, onAction, actionPending, actionJob }) {
   return (
-    <div className="grid gap-4 xl:grid-cols-2">
-      {dashboard.apps.map(app => (
-        <Card key={app.name} title={app.name} icon={Boxes} action={<StatusPill value={app.status} />}>
-          <div className="mb-4 grid gap-3 sm:grid-cols-3">
-            <button disabled={actionPending} onClick={() => onAction(app.name, 'up')} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"><Play className="h-4 w-4" />Subir</button>
-            <button disabled={actionPending} onClick={() => onAction(app.name, 'restart')} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"><RefreshCw className="h-4 w-4" />Reiniciar</button>
-            <button disabled={actionPending} onClick={() => onAction(app.name, 'stop')} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"><Square className="h-4 w-4" />Parar</button>
-          </div>
-          <div className="space-y-2">
-            {app.containers.map(container => (
-              <div key={container.name} className="flex items-center justify-between rounded-md border border-slate-100 bg-slate-50 px-3 py-2">
-                <div>
-                  <div className="text-sm font-medium text-slate-900">{container.name}</div>
-                  <div className="text-xs text-slate-500">{container.detail}</div>
+    <div className="space-y-4">
+      {actionJob ? <ActionTerminal job={actionJob} /> : null}
+      <div className="grid gap-4 xl:grid-cols-2">
+        {dashboard.apps.map(app => (
+          <Card key={app.name} title={app.name} icon={Boxes} action={<StatusPill value={app.status} />}>
+            <div className="mb-4 grid gap-3 sm:grid-cols-4">
+              <button disabled={actionPending} onClick={() => onAction(app.name, 'up')} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"><Play className="h-4 w-4" />Subir</button>
+              <button disabled={actionPending} onClick={() => onAction(app.name, 'restart')} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"><RefreshCw className="h-4 w-4" />Reiniciar</button>
+              <button disabled={actionPending} onClick={() => onAction(app.name, 'stop')} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"><Square className="h-4 w-4" />Parar</button>
+              {app.publicUrl ? (
+                <a href={app.publicUrl} target="_blank" rel="noreferrer" className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-950 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800"><ExternalLink className="h-4 w-4" />Acessar</a>
+              ) : (
+                <button disabled className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm font-medium opacity-50"><ExternalLink className="h-4 w-4" />Acessar</button>
+              )}
+            </div>
+            <div className="space-y-2">
+              {app.containers.map(container => (
+                <div key={container.name} className="flex items-center justify-between rounded-md border border-slate-100 bg-slate-50 px-3 py-2">
+                  <div>
+                    <div className="text-sm font-medium text-slate-900">{container.name}</div>
+                    <div className="text-xs text-slate-500">{container.detail}</div>
+                  </div>
+                  <StatusPill value={container.status} />
                 </div>
-                <StatusPill value={container.status} />
-              </div>
-            ))}
-          </div>
-        </Card>
-      ))}
+              ))}
+            </div>
+          </Card>
+        ))}
+      </div>
     </div>
+  );
+}
+
+function ActionTerminal({ job }) {
+  const output = [job.stdout, job.stderr].filter(Boolean).join('\n').trim();
+  const statusText = job.status === 'running' ? 'Executando' : job.status === 'success' ? 'Concluido' : 'Falhou';
+  return (
+    <Card title={`Execucao: ${job.app} ${job.action}`} icon={Terminal} action={<StatusPill value={job.status} />}>
+      <div className="mb-3 flex flex-wrap items-center gap-3 text-xs text-slate-500">
+        <span>{statusText}</span>
+        <span className="font-mono">{job.command} {(job.args || []).join(' ')}</span>
+        {job.exitCode !== null && job.exitCode !== undefined ? <span>exit {job.exitCode}</span> : null}
+      </div>
+      <pre className="max-h-80 overflow-auto rounded-md bg-slate-950 p-4 text-xs leading-relaxed text-slate-100">{output || 'Aguardando saida do comando...'}</pre>
+      {job.error ? <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{job.error}</div> : null}
+    </Card>
   );
 }
 
@@ -526,6 +565,7 @@ function BackupsView({ dashboard }) {
   const files = dashboard.backups.recentFiles || [];
   const rclone = rcloneQuery.data || dashboard.backups.rclone || {};
   const googleCredentials = googleCredentialsQuery.data || {};
+  const quota = dashboard.backups.quota;
   const [form, setForm] = useState(null);
   const [oauth, setOauth] = useState({ clientId: '', clientSecret: '', redirectUri: '' });
   const [token, setToken] = useState('');
@@ -594,6 +634,16 @@ function BackupsView({ dashboard }) {
   return (
     <div className="grid gap-5 xl:grid-cols-[1fr_1fr]">
       <Card title="Google Drive / Rclone" icon={UploadCloud} action={<StatusPill value={rclone.configConfigured ? 'online' : 'warning'} />}>
+        <div className={`mb-4 rounded-md border px-3 py-3 text-sm ${quota?.ok === false ? 'border-amber-200 bg-amber-50 text-amber-800' : quota?.percentUsed >= 90 ? 'border-red-200 bg-red-50 text-red-800' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="font-semibold text-slate-900">Espaco no Google Drive</div>
+              <div className="text-xs">{quota?.ok === false ? quota.error : quota ? `${formatBytes(quota.used)} usados de ${formatBytes(quota.total)} (${quota.percentUsed ?? '-'}%)` : 'Quota ainda nao consultada'}</div>
+            </div>
+            {quota?.percentUsed !== null && quota?.percentUsed !== undefined ? <StatusPill value={quota.percentUsed >= 90 ? 'warning' : 'online'} /> : null}
+          </div>
+          {quota?.free ? <div className="mt-2 text-xs">Livre: {formatBytes(quota.free)}</div> : null}
+        </div>
         <div className="mb-4 rounded-md border border-slate-200 bg-slate-50 p-3">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3">
             <div>
@@ -1048,6 +1098,7 @@ function SettingsView() {
 
 export default function App() {
   const [active, setActive] = useState('dashboard');
+  const [actionJobId, setActionJobId] = useState(null);
   const queryClient = useQueryClient();
   const dashboardQuery = useQuery({
     queryKey: ['dashboard'],
@@ -1057,15 +1108,30 @@ export default function App() {
   });
   const actionMutation = useMutation({
     mutationFn: ({ app, action }) => postApi(`/api/apps/${app}/${action}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+    onSuccess: (data) => {
+      setActionJobId(data.job?.id || null);
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    }
   });
+  const actionJobQuery = useQuery({
+    queryKey: ['action-job', actionJobId],
+    queryFn: () => api(`/api/actions/${actionJobId}`),
+    enabled: !!actionJobId,
+    refetchInterval: query => query.state.data?.status === 'running' ? 1200 : false
+  });
+  useEffect(() => {
+    if (actionJobQuery.data && actionJobQuery.data.status !== 'running') {
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    }
+  }, [actionJobQuery.data?.status, queryClient]);
   const dashboard = dashboardQuery.data || fallbackDashboard;
+  const appActionPending = actionMutation.isPending || actionJobQuery.data?.status === 'running';
   const activeItem = useMemo(() => navItems.find(item => item.id === active) || navItems[0], [active]);
 
   const View = {
     dashboard: <DashboardView dashboard={dashboard} />,
     diagnostics: <DiagnosticsView />,
-    apps: <AppsView dashboard={dashboard} actionPending={actionMutation.isPending} onAction={(app, action) => actionMutation.mutate({ app, action })} />,
+    apps: <AppsView dashboard={dashboard} actionPending={appActionPending} actionJob={actionJobQuery.data} onAction={(app, action) => actionMutation.mutate({ app, action })} />,
     cluster: <ClusterView dashboard={dashboard} />,
     backups: <BackupsView dashboard={dashboard} />,
     cloudflare: <CloudflareView dashboard={dashboard} />,

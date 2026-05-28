@@ -878,7 +878,9 @@ async function backups() {
     <div class="card"><div class="table-responsive"><table class="table"><thead><tr><th>Banco</th><th>Status</th><th>Externo</th><th>Arquivo</th><th>Tamanho</th><th>Data</th><th>Acoes</th></tr></thead><tbody>${jobs.map(j => {
     const externalText = j.driveStatus === 'UPLOADED'
       ? `Google Drive OK${j.driveWebLink ? ` - ${escapeHtml(j.driveWebLink)}` : ''}`
-      : `${escapeHtml(j.driveStatus || 'DISABLED')}${j.driveErrorMessage ? ` - ${escapeHtml(j.driveErrorMessage)}` : ''}`;
+      : j.driveStatus === 'TRONSOFTOS'
+        ? 'TronSoftOS'
+        : `${escapeHtml(j.driveStatus || 'TRONSOFTOS')}${j.driveErrorMessage ? ` - ${escapeHtml(j.driveErrorMessage)}` : ''}`;
     return `<tr><td>${escapeHtml(j.database?.name || '')}</td><td>${escapeHtml(j.status)}</td><td>${externalText}</td><td>${escapeHtml(j.backupPath || '')}</td><td>${formatBytes(j.backupSize || 0)}</td><td>${new Date(j.createdAt).toLocaleString()}</td><td>${j.status === 'SUCCESS' ? `<a class="btn btn-sm btn-outline-primary" href="/api/backups/${j.id}/download">Download</a>` : escapeHtml(j.errorMessage || '')}</td></tr>`;
   }).join('')}</tbody></table></div></div>`;
   const cleanupQuery = () => `olderThanDays=${encodeURIComponent(cleanupDays.value || 0)}&keepLastPerDatabase=${encodeURIComponent(cleanupKeep.value || 0)}`;
@@ -1055,16 +1057,13 @@ async function services() {
 }
 
 async function settings() {
-  const [cloudflare, drive] = await Promise.all([
-    api('/api/settings/cloudflare-tunnel'),
-    api('/api/settings/google-drive')
-  ]);
+  const cloudflare = await api('/api/settings/cloudflare-tunnel');
   content.innerHTML = `<div class="page-header"><h2 class="page-title">Configuracoes</h2></div>
     <div class="card mb-3"><div class="card-header"><h3 class="card-title">Cloudflare Tunnel</h3></div><div class="card-body">
       <div class="row g-3">
         <div class="col-12">
           <div class="alert alert-info mb-0">
-            Configure um Tunnel no painel da Cloudflare apontando para <code>http://backend:8080</code>, cole o token aqui e use a URL publica gerada como callback do Google.
+            Configure um Tunnel no painel da Cloudflare apontando para <code>http://backend:8080</code> e cole o token aqui quando o acesso publico do TronFire for necessario.
           </div>
         </div>
         <div class="col-12">
@@ -1092,54 +1091,9 @@ async function settings() {
         </div>
       </div>
     </div></div>
-    <div class="card mb-3"><div class="card-header"><h3 class="card-title">Google Drive</h3></div><div class="card-body">
-      <div class="row g-3">
-        <div class="col-12">
-          <div class="alert alert-info mb-0">
-            O cliente clica em conectar, faz login na conta Google e o TronFire envia os backups automaticamente. A credencial OAuth precisa estar cadastrada no Google Cloud e com esta URL de retorno autorizada.
-          </div>
-        </div>
-        <div class="col-12">
-          <label class="form-check">
-            <input id="driveEnabled" class="form-check-input" type="checkbox" ${drive.enabled ? 'checked' : ''}>
-            <span class="form-check-label">Enviar backups para Google Drive</span>
-          </label>
-        </div>
-        <div class="col-md-6">
-          <label class="form-label">Client ID OAuth</label>
-          <input id="driveClientId" class="form-control" placeholder="...apps.googleusercontent.com" value="${escapeHtml(drive.clientId || '')}">
-        </div>
-        <div class="col-md-6">
-          <label class="form-label">Client Secret OAuth</label>
-          <input id="driveClientSecret" class="form-control" type="password" placeholder="${drive.hasClientSecret ? 'Ja salvo - informe apenas para trocar' : 'GOCSPX-...'}">
-        </div>
-        <div class="col-12">
-          <label class="form-label">Ou cole o JSON OAuth baixado do Google Cloud</label>
-          <textarea id="driveCredentialsJson" class="form-control" rows="4" placeholder='{"web":{"client_id":"...","client_secret":"..."}}'></textarea>
-          <div class="text-muted small mt-1">Opcional. Se colar o JSON, o TronFire preenche Client ID e Secret ao salvar.</div>
-        </div>
-        <div class="col-md-6">
-          <label class="form-label">Pasta destino</label>
-          <input id="driveFolderName" class="form-control" placeholder="TronFire Backups" value="${escapeHtml(drive.folderName || 'TronFire Backups')}">
-        </div>
-        <div class="col-md-6">
-          <label class="form-label">URL de retorno para cadastrar no Google Cloud</label>
-          <input id="driveRedirectUri" class="form-control" readonly value="${escapeHtml(drive.redirectUri || '')}">
-        </div>
-        <div class="col-12">
-          <div class="border rounded p-3 bg-light">
-            <div><strong>Status:</strong> ${drive.connected ? `Conectado${drive.accountEmail ? ` em ${escapeHtml(drive.accountEmail)}` : ''}` : 'Conta Google ainda nao conectada'}</div>
-            <div class="text-muted small mt-1">A janela de login abre no navegador do usuario. Nenhum rclone e necessario.</div>
-          </div>
-        </div>
-        <div class="col-12 d-flex flex-wrap gap-2">
-          <button id="btnSaveDrive" class="btn btn-primary">Salvar configuracao</button>
-          <button id="btnConnectDrive" class="btn btn-success">Conectar conta Google</button>
-          <button id="btnTestDrive" class="btn btn-outline-primary">Testar envio</button>
-        </div>
-        <div class="col-12">
-          <div id="driveStatus" class="small mt-2">${drive.updatedAt ? `Ultima alteracao: ${new Date(drive.updatedAt).toLocaleString()}${drive.updatedBy ? ` por ${escapeHtml(drive.updatedBy)}` : ''}` : 'Nenhuma configuracao salva.'}</div>
-        </div>
+    <div class="card mb-3"><div class="card-header"><h3 class="card-title">Backup em nuvem</h3></div><div class="card-body">
+      <div class="alert alert-info mb-0">
+        Google Drive/rclone e configurado no TronSoftOS. O TronFire mantem os backups locais e registra o status como gerenciado pelo TronSoftOS.
       </div>
     </div></div>`;
   const cloudflarePayload = () => ({
@@ -1158,7 +1112,6 @@ async function settings() {
       cloudflareStatus.textContent = 'Salvando tunnel...';
       renderCloudflareResult(await api('/api/settings/cloudflare-tunnel', { method: 'PATCH', body: JSON.stringify(cloudflarePayload()) }));
       cloudflarePublicUrl.value = cloudflarePayload().publicUrl;
-      driveRedirectUri.value = `${cloudflarePublicUrl.value.replace(/\/+$/g, '')}/api/settings/google-drive/oauth/callback`;
     } catch (err) {
       cloudflareStatus.className = 'small mt-2 text-danger';
       cloudflareStatus.textContent = err.message;
@@ -1171,7 +1124,6 @@ async function settings() {
       await api('/api/settings/cloudflare-tunnel', { method: 'PATCH', body: JSON.stringify(cloudflarePayload()) });
       renderCloudflareResult(await api('/api/settings/cloudflare-tunnel/start', { method: 'POST', body: JSON.stringify({}) }));
       cloudflarePublicUrl.value = cloudflarePayload().publicUrl;
-      driveRedirectUri.value = `${cloudflarePublicUrl.value.replace(/\/+$/g, '')}/api/settings/google-drive/oauth/callback`;
     } catch (err) {
       cloudflareStatus.className = 'small mt-2 text-danger';
       cloudflareStatus.textContent = err.message;
@@ -1185,53 +1137,6 @@ async function settings() {
     } catch (err) {
       cloudflareStatus.className = 'small mt-2 text-danger';
       cloudflareStatus.textContent = err.message;
-    }
-  };
-  const drivePayload = () => ({
-    enabled: driveEnabled.checked,
-    clientId: driveClientId.value,
-    clientSecret: driveClientSecret.value,
-    credentialsJson: driveCredentialsJson.value,
-    folderName: driveFolderName.value
-  });
-  btnSaveDrive.onclick = async () => {
-    try {
-      driveStatus.className = 'small mt-2 text-muted';
-      driveStatus.textContent = 'Salvando...';
-      const saved = await api('/api/settings/google-drive', { method: 'PATCH', body: JSON.stringify(drivePayload()) });
-      driveClientId.value = saved.clientId || '';
-      driveClientSecret.value = '';
-      driveCredentialsJson.value = '';
-      driveStatus.className = 'small mt-2 text-success';
-      driveStatus.textContent = saved.enabled ? 'Configuracao Google Drive salva.' : 'Backup externo desativado.';
-    } catch (err) {
-      driveStatus.className = 'small mt-2 text-danger';
-      driveStatus.textContent = err.message;
-    }
-  };
-  btnConnectDrive.onclick = async () => {
-    try {
-      driveStatus.className = 'small mt-2 text-muted';
-      driveStatus.textContent = 'Salvando e abrindo Google...';
-      await api('/api/settings/google-drive', { method: 'PATCH', body: JSON.stringify(drivePayload()) });
-      const out = await api('/api/settings/google-drive/oauth/start', { method: 'POST', body: JSON.stringify({}) });
-      window.location.href = out.authUrl;
-    } catch (err) {
-      driveStatus.className = 'small mt-2 text-danger';
-      driveStatus.textContent = err.message;
-    }
-  };
-  btnTestDrive.onclick = async () => {
-    try {
-      driveStatus.className = 'small mt-2 text-muted';
-      driveStatus.textContent = 'Testando envio...';
-      await api('/api/settings/google-drive', { method: 'PATCH', body: JSON.stringify(drivePayload()) });
-      const out = await api('/api/settings/google-drive/test', { method: 'POST', body: JSON.stringify({}) });
-      driveStatus.className = 'small mt-2 text-success';
-      driveStatus.textContent = `Envio de teste OK na pasta ${out.folderName}.`;
-    } catch (err) {
-      driveStatus.className = 'small mt-2 text-danger';
-      driveStatus.textContent = err.message;
     }
   };
 }
