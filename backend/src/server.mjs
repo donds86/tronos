@@ -128,6 +128,60 @@ function writeNodeIdentity(body) {
   return identity;
 }
 
+function defaultClusterLock() {
+  const identity = nodeIdentity();
+  return {
+    cluster: identity.clusterId,
+    active_node: identity.nodeRole === 'primary' ? identity.nodeName : '',
+    this_node: identity.nodeName,
+    allow_promotion: false,
+    last_valid_standby: null,
+    reason: '',
+    updated_at: new Date().toISOString()
+  };
+}
+
+function clusterLock() {
+  return readJson(clusterLockPath, null) || defaultClusterLock();
+}
+
+function normalizeClusterLock(body) {
+  const current = clusterLock();
+  const identity = nodeIdentity();
+  const next = {
+    ...current,
+    cluster: envLike(body.cluster, current.cluster || identity.clusterId),
+    active_node: String(body.active_node ?? current.active_node ?? '').trim(),
+    this_node: envLike(body.this_node, current.this_node || identity.nodeName),
+    allow_promotion: body.allow_promotion === true,
+    last_valid_standby: body.last_valid_standby === undefined ? current.last_valid_standby || null : (String(body.last_valid_standby || '').trim() || null),
+    reason: String(body.reason ?? current.reason ?? '').trim(),
+    updated_at: new Date().toISOString()
+  };
+  if (!/^[A-Za-z0-9_.-]{1,80}$/.test(next.cluster)) throw new Error('cluster invalido');
+  if (next.active_node && !/^[A-Za-z0-9_.-]{1,80}$/.test(next.active_node)) throw new Error('active_node invalido');
+  if (!/^[A-Za-z0-9_.-]{1,80}$/.test(next.this_node)) throw new Error('this_node invalido');
+  if (next.allow_promotion && !next.reason) throw new Error('informe o motivo para permitir promocao');
+  return next;
+}
+
+function writeClusterLock(body) {
+  ensureStateDir();
+  const next = normalizeClusterLock(body);
+  fs.writeFileSync(clusterLockPath, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+  appendEvent(next.allow_promotion ? 'CLUSTER_PROMOTION_ALLOWED' : 'CLUSTER_PROMOTION_BLOCKED', {
+    cluster: next.cluster,
+    activeNode: next.active_node,
+    thisNode: next.this_node,
+    reason: next.reason
+  });
+  return next;
+}
+
+function blockClusterPromotion(reason = '') {
+  return writeClusterLock({ ...clusterLock(), allow_promotion: false, reason: String(reason || 'promocao bloqueada').trim() });
+}
+
 function publicSmtpSettings(settings) {
   return {
     enabled: settings.enabled === true,
@@ -716,7 +770,7 @@ async function appsStatus() {
 }
 
 function clusterStatus() {
-  const lock = readJson(clusterLockPath, null);
+  const lock = clusterLock();
   const identity = nodeIdentity();
   return {
     mode: identity.deploymentMode || process.env.TRONSOFTOS_DEPLOYMENT_MODE || 'simple',
@@ -1317,6 +1371,9 @@ async function handleApi(req, reply, url) {
     return json(reply, 200, publicActionJob(job));
   }
   if (req.method === 'GET' && url.pathname === '/api/cluster') return json(reply, 200, clusterStatus());
+  if (req.method === 'GET' && url.pathname === '/api/cluster/lock') return json(reply, 200, clusterLock());
+  if (req.method === 'PATCH' && url.pathname === '/api/cluster/lock') return json(reply, 200, writeClusterLock(await readBody(req)));
+  if (req.method === 'POST' && url.pathname === '/api/cluster/promotion/block') return json(reply, 200, blockClusterPromotion((await readBody(req).catch(() => ({}))).reason));
   if (req.method === 'GET' && url.pathname === '/api/node-identity') return json(reply, 200, nodeIdentity());
   if (req.method === 'PATCH' && url.pathname === '/api/node-identity') return json(reply, 200, writeNodeIdentity(await readBody(req)));
   if (req.method === 'GET' && url.pathname === '/api/backups') return json(reply, 200, await backupStatus());

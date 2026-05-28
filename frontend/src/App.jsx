@@ -498,13 +498,24 @@ function ClusterView({ dashboard }) {
   const queryClient = useQueryClient();
   const cluster = dashboard.cluster;
   const identityQuery = useQuery({ queryKey: ['node-identity'], queryFn: () => api('/api/node-identity') });
+  const lockQuery = useQuery({ queryKey: ['cluster-lock'], queryFn: () => api('/api/cluster/lock') });
   const identity = identityQuery.data || cluster.identity || {};
+  const lock = lockQuery.data || cluster.lock || {};
   const [form, setForm] = useState(null);
+  const [lockForm, setLockForm] = useState(null);
   const values = form || {
     clusterId: identity.clusterId || 'local',
     nodeName: identity.nodeName || cluster.nodeName || 'servidor-01',
     nodeRole: identity.nodeRole || cluster.nodeRole || 'primary',
     deploymentMode: identity.deploymentMode || cluster.mode || 'simple'
+  };
+  const lockValues = lockForm || {
+    cluster: lock.cluster || values.clusterId,
+    active_node: lock.active_node || (values.nodeRole === 'primary' ? values.nodeName : ''),
+    this_node: lock.this_node || values.nodeName,
+    allow_promotion: lock.allow_promotion === true,
+    last_valid_standby: lock.last_valid_standby || '',
+    reason: lock.reason || ''
   };
   const saveMutation = useMutation({
     mutationFn: payload => fetch('/api/node-identity', {
@@ -521,7 +532,47 @@ function ClusterView({ dashboard }) {
       queryClient.invalidateQueries({ queryKey: ['events'] });
     }
   });
+  const lockMutation = useMutation({
+    mutationFn: payload => fetch('/api/cluster/lock', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(async response => {
+      if (!response.ok) throw new Error((await response.json()).error || `HTTP ${response.status}`);
+      return response.json();
+    }),
+    onSuccess: data => {
+      setLockForm({
+        cluster: data.cluster || '',
+        active_node: data.active_node || '',
+        this_node: data.this_node || '',
+        allow_promotion: data.allow_promotion === true,
+        last_valid_standby: data.last_valid_standby || '',
+        reason: data.reason || ''
+      });
+      queryClient.invalidateQueries({ queryKey: ['cluster-lock'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+    }
+  });
+  const blockMutation = useMutation({
+    mutationFn: reason => postApi('/api/cluster/promotion/block', { reason }),
+    onSuccess: data => {
+      setLockForm({
+        cluster: data.cluster || '',
+        active_node: data.active_node || '',
+        this_node: data.this_node || '',
+        allow_promotion: data.allow_promotion === true,
+        last_valid_standby: data.last_valid_standby || '',
+        reason: data.reason || ''
+      });
+      queryClient.invalidateQueries({ queryKey: ['cluster-lock'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+    }
+  });
   const setValue = (key, value) => setForm(previous => ({ ...(previous || values), [key]: value }));
+  const setLockValue = (key, value) => setLockForm(previous => ({ ...(previous || lockValues), [key]: value }));
   return (
     <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
       <Card title="Estado do cluster" icon={GitBranch}>
@@ -577,6 +628,40 @@ function ClusterView({ dashboard }) {
             {saveMutation.isSuccess ? <span className="text-sm text-green-700">Identidade salva.</span> : null}
             {saveMutation.isError ? <span className="text-sm text-red-700">{saveMutation.error?.message}</span> : null}
           </div>
+        </form>
+      </Card>
+      <Card title="Controle de promocao" icon={ShieldCheck} action={<StatusPill value={lockValues.allow_promotion ? 'warning' : 'disabled'} />}>
+        <form
+          className="grid gap-3 md:grid-cols-2"
+          onSubmit={event => {
+            event.preventDefault();
+            lockMutation.mutate(lockValues);
+          }}
+        >
+          <Field label="Cluster" value={lockValues.cluster} onChange={value => setLockValue('cluster', value)} placeholder="cliente-x" />
+          <Field label="No atual" value={lockValues.this_node} onChange={value => setLockValue('this_node', value)} placeholder="servidor-02" />
+          <Field label="No ativo" value={lockValues.active_node} onChange={value => setLockValue('active_node', value)} placeholder="servidor-01" />
+          <Field label="Ultimo standby valido" value={lockValues.last_valid_standby} onChange={value => setLockValue('last_valid_standby', value)} placeholder="2026-05-28 10:30" />
+          <label className="block md:col-span-2">
+            <span className="text-xs font-medium uppercase text-slate-500">Motivo/confirmacao</span>
+            <textarea value={lockValues.reason} onChange={event => setLockValue('reason', event.target.value)} className="mt-1 h-20 w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100" placeholder="Ex: primary parado para manutencao, standby validado" />
+          </label>
+          <div className="md:col-span-2 flex flex-wrap items-center gap-3">
+            <button type="button" disabled={lockMutation.isPending} onClick={() => lockMutation.mutate({ ...lockValues, allow_promotion: true })} className="inline-flex items-center justify-center gap-2 rounded-md bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50">
+              <ShieldCheck className="h-4 w-4" />
+              Permitir promocao
+            </button>
+            <button type="button" disabled={blockMutation.isPending} onClick={() => blockMutation.mutate(lockValues.reason || 'promocao bloqueada pelo TronSoftOS')} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50">
+              <XCircle className="h-4 w-4" />
+              Bloquear promocao
+            </button>
+            <button disabled={lockMutation.isPending} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50">
+              <Save className="h-4 w-4" />
+              Salvar trava
+            </button>
+          </div>
+          {lockMutation.isSuccess || blockMutation.isSuccess ? <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700 md:col-span-2">Cluster-lock atualizado.</div> : null}
+          {lockMutation.isError || blockMutation.isError ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 md:col-span-2">{lockMutation.error?.message || blockMutation.error?.message}</div> : null}
         </form>
       </Card>
       <Card title="Topologia HA" icon={Activity}><Topology dashboard={dashboard} /></Card>
