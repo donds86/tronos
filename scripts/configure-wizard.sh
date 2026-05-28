@@ -277,7 +277,7 @@ echo "Cloudflare sera configurado depois no painel do TronSoftOS."
 
 HA_INTERFACE=""
 HA_VIP=""
-HA_PRIORITY="150"
+HA_PRIORITY="$([ "$NODE_ROLE" = "primary" ] && echo 150 || echo 100)"
 if [ "$DEPLOYMENT_MODE" = "ha" ]; then
   line
   echo "VIP do HA"
@@ -287,7 +287,7 @@ if [ "$DEPLOYMENT_MODE" = "ha" ]; then
   line
   HA_INTERFACE="${STATIC_IP_INTERFACE:-$DEFAULT_IFACE}"
   HA_VIP=""
-  HA_PRIORITY="$(ask "Prioridade keepalived deste no" "$([ "$NODE_ROLE" = "primary" ] && echo 150 || echo 100)")"
+  echo "Prioridade Keepalived definida automaticamente: $HA_PRIORITY"
 fi
 
 cat > "$TRONSOFTOS_ENV" <<EOF
