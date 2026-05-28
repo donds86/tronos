@@ -183,6 +183,83 @@ function blockClusterPromotion(reason = '') {
   return writeClusterLock({ ...clusterLock(), allow_promotion: false, reason: String(reason || 'promocao bloqueada').trim() });
 }
 
+function clusterGuard() {
+  const identity = nodeIdentity();
+  const lock = clusterLock();
+  const mode = identity.deploymentMode || 'simple';
+  const activeNode = String(lock.active_node || '').trim();
+  const thisNode = identity.nodeName;
+  const isHa = mode === 'ha';
+  const noActiveDefined = !activeNode;
+  const isLocalActive = !isHa || activeNode === thisNode || (noActiveDefined && identity.nodeRole === 'primary');
+  const returnedFormerPrimary = isHa && identity.nodeRole === 'primary' && activeNode && activeNode !== thisNode;
+  const standbyWaiting = isHa && ['standby', 'recovery'].includes(identity.nodeRole) && activeNode !== thisNode;
+  const canPromote = isHa && identity.nodeRole === 'standby' && lock.allow_promotion === true && activeNode !== thisNode;
+  const canHoldVip = !returnedFormerPrimary && isLocalActive && identity.nodeRole !== 'recovery';
+  const canServeProduction = canHoldVip && identity.nodeRole !== 'recovery';
+  let status = 'ok';
+  let reason = 'nó autorizado';
+  if (returnedFormerPrimary) {
+    status = 'blocked';
+    reason = `nó era primary, mas o ativo atual é ${activeNode}`;
+  } else if (identity.nodeRole === 'recovery') {
+    status = 'maintenance';
+    reason = 'nó em recuperação/ressincronização';
+  } else if (standbyWaiting && !canPromote) {
+    status = 'standby';
+    reason = activeNode ? `standby aguardando ativo ${activeNode}` : 'standby aguardando promoção';
+  } else if (canPromote) {
+    status = 'promotion-allowed';
+    reason = 'promoção autorizada pelo cluster-lock';
+  }
+  return {
+    status,
+    reason,
+    cluster: lock.cluster || identity.clusterId,
+    thisNode,
+    nodeRole: identity.nodeRole,
+    activeNode,
+    allowPromotion: lock.allow_promotion === true,
+    canHoldVip,
+    canServeProduction,
+    canPromote,
+    returnedFormerPrimary,
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function activateLocalNode(body = {}) {
+  const identity = nodeIdentity();
+  const lock = clusterLock();
+  const reason = String(body.reason || lock.reason || '').trim();
+  const activeNode = String(lock.active_node || '').trim();
+  if (identity.deploymentMode === 'ha') {
+    if (identity.nodeRole === 'recovery') throw new Error('nó em recuperação não pode ser ativado sem trocar o papel primeiro');
+    if (identity.nodeRole === 'primary' && activeNode && activeNode !== identity.nodeName) throw new Error(`outro nó já está ativo: ${activeNode}`);
+    if (identity.nodeRole === 'standby' && activeNode !== identity.nodeName && lock.allow_promotion !== true) {
+      throw new Error('promoção não autorizada no cluster-lock');
+    }
+  }
+  if (!reason) throw new Error('informe o motivo/confirmacao para ativar este nó');
+  const nextLock = writeClusterLock({
+    ...lock,
+    cluster: identity.clusterId,
+    active_node: identity.nodeName,
+    this_node: identity.nodeName,
+    allow_promotion: false,
+    reason
+  });
+  appendEvent('CLUSTER_LOCAL_NODE_ACTIVATED', { cluster: identity.clusterId, nodeName: identity.nodeName, nodeRole: identity.nodeRole, reason });
+  return { lock: nextLock, guard: clusterGuard() };
+}
+
+function putLocalNodeInRecovery(body = {}) {
+  const identity = writeNodeIdentity({ ...nodeIdentity(), nodeRole: 'recovery' });
+  const lock = blockClusterPromotion(String(body.reason || 'nó colocado em recuperação para evitar duplo primary').trim());
+  appendEvent('CLUSTER_NODE_RECOVERY_MODE', { cluster: identity.clusterId, nodeName: identity.nodeName, reason: lock.reason });
+  return { identity, lock, guard: clusterGuard() };
+}
+
 function rawHaSyncSettings() {
   return {
     enabled: false,
@@ -829,6 +906,7 @@ async function appsStatus() {
 function clusterStatus() {
   const lock = clusterLock();
   const identity = nodeIdentity();
+  const guard = clusterGuard();
   return {
     mode: identity.deploymentMode || process.env.TRONSOFTOS_DEPLOYMENT_MODE || 'simple',
     nodeName: identity.nodeName || process.env.TRONSOFTOS_NODE_NAME || 'local',
@@ -837,6 +915,7 @@ function clusterStatus() {
     vip: process.env.HA_VIP || null,
     lockPath: clusterLockPath,
     lock,
+    guard,
     keepalived: {
       enabled: process.env.TRONSOFTOS_KEEPALIVED_ENABLED === 'true',
       interface: process.env.HA_INTERFACE || null,
@@ -1480,9 +1559,12 @@ async function handleApi(req, reply, url) {
     return json(reply, 200, publicActionJob(job));
   }
   if (req.method === 'GET' && url.pathname === '/api/cluster') return json(reply, 200, clusterStatus());
+  if (req.method === 'GET' && url.pathname === '/api/cluster/guard') return json(reply, 200, clusterGuard());
   if (req.method === 'GET' && url.pathname === '/api/cluster/lock') return json(reply, 200, clusterLock());
   if (req.method === 'PATCH' && url.pathname === '/api/cluster/lock') return json(reply, 200, writeClusterLock(await readBody(req)));
   if (req.method === 'POST' && url.pathname === '/api/cluster/promotion/block') return json(reply, 200, blockClusterPromotion((await readBody(req).catch(() => ({}))).reason));
+  if (req.method === 'POST' && url.pathname === '/api/cluster/activate-local') return json(reply, 200, activateLocalNode(await readBody(req).catch(() => ({}))));
+  if (req.method === 'POST' && url.pathname === '/api/cluster/recovery-local') return json(reply, 200, putLocalNodeInRecovery(await readBody(req).catch(() => ({}))));
   if (req.method === 'GET' && url.pathname === '/api/cluster/sync') return json(reply, 200, publicHaSyncSettings());
   if (req.method === 'PATCH' && url.pathname === '/api/cluster/sync') return json(reply, 200, writeHaSyncSettings(await readBody(req)));
   if (req.method === 'POST' && url.pathname === '/api/cluster/sync/run') return json(reply, 202, { ok: true, job: startHaSync() });

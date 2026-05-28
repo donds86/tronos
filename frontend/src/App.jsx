@@ -137,6 +137,8 @@ function statusClass(status) {
     primary: 'bg-green-100 text-green-800 border-green-200',
     degraded: 'bg-amber-100 text-amber-800 border-amber-200',
     warning: 'bg-amber-100 text-amber-800 border-amber-200',
+    blocked: 'bg-red-100 text-red-800 border-red-200',
+    'promotion-allowed': 'bg-amber-100 text-amber-800 border-amber-200',
     standby: 'bg-sky-100 text-sky-800 border-sky-200',
     recovery: 'bg-violet-100 text-violet-800 border-violet-200',
     disabled: 'bg-slate-100 text-slate-700 border-slate-200',
@@ -516,9 +518,11 @@ function ClusterView({ dashboard }) {
   const cluster = dashboard.cluster;
   const identityQuery = useQuery({ queryKey: ['node-identity'], queryFn: () => api('/api/node-identity') });
   const lockQuery = useQuery({ queryKey: ['cluster-lock'], queryFn: () => api('/api/cluster/lock') });
+  const guardQuery = useQuery({ queryKey: ['cluster-guard'], queryFn: () => api('/api/cluster/guard'), refetchInterval: 5000 });
   const syncQuery = useQuery({ queryKey: ['ha-sync-settings'], queryFn: () => api('/api/cluster/sync') });
   const identity = identityQuery.data || cluster.identity || {};
   const lock = lockQuery.data || cluster.lock || {};
+  const guard = guardQuery.data || cluster.guard || {};
   const sync = syncQuery.data || {};
   const [form, setForm] = useState(null);
   const [lockForm, setLockForm] = useState(null);
@@ -559,6 +563,7 @@ function ClusterView({ dashboard }) {
     }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['node-identity'] });
+      queryClient.invalidateQueries({ queryKey: ['cluster-guard'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
       queryClient.invalidateQueries({ queryKey: ['events'] });
     }
@@ -582,6 +587,7 @@ function ClusterView({ dashboard }) {
         reason: data.reason || ''
       });
       queryClient.invalidateQueries({ queryKey: ['cluster-lock'] });
+      queryClient.invalidateQueries({ queryKey: ['cluster-guard'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
       queryClient.invalidateQueries({ queryKey: ['events'] });
     }
@@ -598,6 +604,36 @@ function ClusterView({ dashboard }) {
         reason: data.reason || ''
       });
       queryClient.invalidateQueries({ queryKey: ['cluster-lock'] });
+      queryClient.invalidateQueries({ queryKey: ['cluster-guard'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+    }
+  });
+  const activateMutation = useMutation({
+    mutationFn: reason => postApi('/api/cluster/activate-local', { reason }),
+    onSuccess: data => {
+      if (data.lock) {
+        setLockForm({
+          cluster: data.lock.cluster || '',
+          active_node: data.lock.active_node || '',
+          this_node: data.lock.this_node || '',
+          allow_promotion: data.lock.allow_promotion === true,
+          last_valid_standby: data.lock.last_valid_standby || '',
+          reason: data.lock.reason || ''
+        });
+      }
+      queryClient.invalidateQueries({ queryKey: ['cluster-lock'] });
+      queryClient.invalidateQueries({ queryKey: ['cluster-guard'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+    }
+  });
+  const recoveryMutation = useMutation({
+    mutationFn: reason => postApi('/api/cluster/recovery-local', { reason }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['node-identity'] });
+      queryClient.invalidateQueries({ queryKey: ['cluster-lock'] });
+      queryClient.invalidateQueries({ queryKey: ['cluster-guard'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
       queryClient.invalidateQueries({ queryKey: ['events'] });
     }
@@ -646,7 +682,8 @@ function ClusterView({ dashboard }) {
             ['Install ID', identity.installId || '-'],
             ['VIP', cluster.vip || 'nao configurado'],
             ['Keepalived', cluster.keepalived?.enabled ? 'ativo' : 'nao configurado'],
-            ['Cluster lock', cluster.lock ? 'presente' : 'ausente']
+            ['Cluster lock', cluster.lock ? 'presente' : 'ausente'],
+            ['Guard', guard.status || '-']
           ].map(([label, value]) => (
             <div key={label} className="flex items-center justify-between border-b border-slate-100 pb-2">
               <dt className="text-slate-500">{label}</dt>
@@ -723,6 +760,37 @@ function ClusterView({ dashboard }) {
           {lockMutation.isSuccess || blockMutation.isSuccess ? <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700 md:col-span-2">Cluster-lock atualizado.</div> : null}
           {lockMutation.isError || blockMutation.isError ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 md:col-span-2">{lockMutation.error?.message || blockMutation.error?.message}</div> : null}
         </form>
+      </Card>
+      <Card title="Protecao de duplo primary" icon={ShieldCheck} action={<StatusPill value={guard.canHoldVip ? 'online' : 'blocked'} />}>
+        <div className="grid gap-3 text-sm">
+          {[
+            ['Status', guard.status || '-'],
+            ['Motivo', guard.reason || '-'],
+            ['No local', guard.thisNode || values.nodeName],
+            ['No ativo', guard.activeNode || 'nao definido'],
+            ['Pode segurar VIP', guard.canHoldVip ? 'sim' : 'nao'],
+            ['Pode servir producao', guard.canServeProduction ? 'sim' : 'nao'],
+            ['Pode promover', guard.canPromote ? 'sim' : 'nao']
+          ].map(([label, value]) => (
+            <div key={label} className="flex items-center justify-between gap-4 border-b border-slate-100 pb-2">
+              <span className="text-slate-500">{label}</span>
+              <span className="text-right font-medium text-slate-950">{value}</span>
+            </div>
+          ))}
+        </div>
+        {guard.returnedFormerPrimary ? <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">Este nó parece ser um antigo principal retornando. Ele fica bloqueado para VIP/producao ate ressincronizar.</div> : null}
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <button type="button" disabled={activateMutation.isPending || (!guard.canPromote && values.deploymentMode === 'ha' && values.nodeRole === 'standby')} onClick={() => activateMutation.mutate(lockValues.reason || 'ativacao manual confirmada no TronSoftOS')} className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-950 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50">
+            <ShieldCheck className="h-4 w-4" />
+            Marcar este no como ativo
+          </button>
+          <button type="button" disabled={recoveryMutation.isPending} onClick={() => recoveryMutation.mutate(lockValues.reason || 'nó retornou e sera ressincronizado antes de voltar ao cluster')} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50">
+            <XCircle className="h-4 w-4" />
+            Colocar em recuperacao
+          </button>
+        </div>
+        {activateMutation.isSuccess || recoveryMutation.isSuccess ? <div className="mt-3 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">Protecao atualizada.</div> : null}
+        {activateMutation.isError || recoveryMutation.isError ? <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{activateMutation.error?.message || recoveryMutation.error?.message}</div> : null}
       </Card>
       <Card title="Sync HA" icon={RefreshCw} action={<StatusPill value={syncValues.enabled ? 'online' : 'disabled'} />}>
         <form
