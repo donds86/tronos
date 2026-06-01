@@ -492,6 +492,7 @@ async function cleanupRetention(db) {
 }
 
 async function runAutomaticBackups() {
+  if (!isPrimaryNode()) return;
   if (backupRunning) return;
   backupRunning = true;
   try {
@@ -524,6 +525,7 @@ async function checkDisk() {
 }
 
 async function checkDatabases() {
+  if (!isPrimaryNode()) return;
   const dbs = await prisma.managedDatabase.findMany({ where: { type: { not: 'ARQUIVADO' } } });
   for (const db of dbs) {
     try {
