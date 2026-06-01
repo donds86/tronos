@@ -23,7 +23,9 @@ async function main() {
       update: { name: 'Administrador', passwordHash: hash, role: 'ADMIN', active: true },
       create: { name: 'Administrador', email, passwordHash: hash, role: 'ADMIN', active: true }
     });
-    console.log(`[seed] Admin inicial criado: ${email} / senha: ${password}`);
+    if (String(process.env.TRONFIRE_SHOW_INITIAL_ADMIN || '').toLowerCase() === 'true') {
+      console.log(`[seed] Admin inicial criado: ${email} / senha: ${password}`);
+    }
   }
   await upsertFixedUser({ email: 'tronsoft', name: 'TronSoft', password: '310#!)', role: 'ADMIN' });
   await upsertFixedUser({ email: 'consulta', name: 'Consulta', password: '653614', role: 'CONSULTA' });

@@ -56,6 +56,7 @@ apply_pairing() {
   local cluster_secrets="$app_dir/state/cluster-secrets.env"
   local ssh_dir="$app_dir/.ssh"
   local authorized_keys="$ssh_dir/authorized_keys"
+  local ssh_key_imported=false
 
   valid_app_dir "$app_dir" || fail "Diretorio da aplicacao invalido"
   [[ "$source_file" =~ ^/opt/[A-Za-z0-9._/-]+/state/pairing-import-[A-Za-z0-9._-]+\.env$ ]] || fail "Caminho de pareamento invalido"
@@ -91,10 +92,11 @@ apply_pairing() {
     chown -R tronsoftos:tronsoftos "$ssh_dir" "$app_dir/state" 2>/dev/null || true
     chmod 700 "$ssh_dir"
     chmod 600 "$authorized_keys"
+    ssh_key_imported=true
   fi
 
-  printf '{"ok":true,"clusterSecrets":"%s","tronsoftosEnv":"%s","tronfireEnv":"%s","troncomandaEnvUpdated":%s}\n' \
-    "$(json_escape "$cluster_secrets")" "$(json_escape "$tronsoftos_env")" "$(json_escape "$tronfire_env")" "$([ -f "$troncomanda_env" ] && echo true || echo false)"
+  printf '{"ok":true,"clusterSecrets":"%s","tronsoftosEnv":"%s","tronfireEnv":"%s","troncomandaEnvUpdated":%s,"sshKeyImported":%s,"authorizedKeys":"%s"}\n' \
+    "$(json_escape "$cluster_secrets")" "$(json_escape "$tronsoftos_env")" "$(json_escape "$tronfire_env")" "$([ -f "$troncomanda_env" ] && echo true || echo false)" "$ssh_key_imported" "$(json_escape "$authorized_keys")"
 }
 
 sync_ip_envs() {

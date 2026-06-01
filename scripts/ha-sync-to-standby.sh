@@ -13,13 +13,16 @@ LOG_DIR="${TRONSOFTOS_LOG_DIR:-${APP_DIR}/logs}/ha-sync"
 STAMP="$(date +%Y%m%d%H%M%S)"
 LOG_FILE="${LOG_DIR}/ha-sync-${STAMP}.log"
 KNOWN_HOSTS="${TRONSOFTOS_SSH_KNOWN_HOSTS:-${APP_DIR}/state/known_hosts}"
-SSH_BASE_OPTS="-p ${SSH_PORT} -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${KNOWN_HOSTS}"
+IDENTITY_FILE="${TRONSOFTOS_SSH_IDENTITY_FILE:-${APP_DIR}/state/ssh/id_ed25519}"
+SSH_BASE_OPTS="-p ${SSH_PORT} -i ${IDENTITY_FILE} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${KNOWN_HOSTS}"
 RSYNC_SSH="ssh ${SSH_BASE_OPTS}"
 
 mkdir -p "$LOG_DIR" "$CATALOG_DIR" "$(dirname "$KNOWN_HOSTS")"
+[ -f "$IDENTITY_FILE" ] || { echo "[ha-sync] chave SSH nao encontrada: $IDENTITY_FILE" >&2; exit 1; }
 touch "$KNOWN_HOSTS"
 chmod 700 "$(dirname "$KNOWN_HOSTS")" 2>/dev/null || true
 chmod 600 "$KNOWN_HOSTS" 2>/dev/null || true
+chmod 600 "$IDENTITY_FILE" 2>/dev/null || true
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "[ha-sync] inicio $(date -Is)"

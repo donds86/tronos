@@ -78,6 +78,24 @@ yes_no() {
   esac
 }
 
+choose_node_role() {
+  local value
+  while true; do
+    echo "Papel deste no:"
+    echo "  1) primary"
+    echo "  2) standby"
+    echo "  3) recovery"
+    read -r -p "Escolha [1]: " value
+    value="${value:-1}"
+    case "$value" in
+      1|primary) echo "primary"; return 0 ;;
+      2|standby) echo "standby"; return 0 ;;
+      3|recovery) echo "recovery"; return 0 ;;
+      *) echo "Opcao invalida. Digite 1, 2 ou 3." >&2 ;;
+    esac
+  done
+}
+
 command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
@@ -212,7 +230,7 @@ fi
 NODE_NAME="$(ask "Nome deste servidor/no" "servidor-01")"
 NODE_ROLE="primary"
 if [ "$DEPLOYMENT_MODE" = "ha" ]; then
-  NODE_ROLE="$(ask "Papel deste no (primary/standby/recovery)" "primary")"
+  NODE_ROLE="$(choose_node_role)"
 fi
 CLUSTER_ID="$(ask "ID do cluster/cliente" "$(echo "$NODE_NAME" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9_.-' '-')")"
 NODE_ID="$(new_uuid)"
@@ -220,21 +238,6 @@ INSTALL_ID="$(new_uuid)"
 
 SESSION_SECRET=""
 INTERNAL_TOKEN=""
-TRONSOFTOS_SSH_PUBLIC_KEY=""
-if [ "$DEPLOYMENT_MODE" = "ha" ] && [ "$NODE_ROLE" != "primary" ]; then
-  if yes_no "Voce tem o arquivo de pareamento do no principal? (s/n)" "s"; then
-    PAIRING_FILE="$(ask "Caminho do arquivo cluster-secrets.env" "$CLUSTER_SECRETS")"
-    if [ -f "$PAIRING_FILE" ]; then
-      # shellcheck disable=SC1090
-      . "$PAIRING_FILE"
-      SESSION_SECRET="${SESSION_SECRET:-}"
-      INTERNAL_TOKEN="${TRONSOFTOS_INTERNAL_TOKEN:-${INTERNAL_TOKEN:-}}"
-      TRONSOFTOS_SSH_PUBLIC_KEY="${TRONSOFTOS_SSH_PUBLIC_KEY:-}"
-    else
-      echo "Arquivo de pareamento nao encontrado. Segredos serao gerados neste no."
-    fi
-  fi
-fi
 
 DEFAULT_IFACE="$(detect_default_iface)"
 DEFAULT_IPV4_CIDR="$(detect_default_ipv4_cidr "$DEFAULT_IFACE")"
@@ -377,7 +380,8 @@ fi
 if [ -n "$GHCR_USER" ] && [ -n "$GHCR_TOKEN" ]; then
   mkdir -p "$APP_DIR/state/docker-config"
   chmod 700 "$APP_DIR/state/docker-config"
-  if printf '%s\n' "$GHCR_TOKEN" | DOCKER_CONFIG="$APP_DIR/state/docker-config" docker login "$GHCR_REGISTRY" -u "$GHCR_USER" --password-stdin; then
+  GHCR_LOGIN_OUTPUT="$(printf '%s\n' "$GHCR_TOKEN" | DOCKER_CONFIG="$APP_DIR/state/docker-config" docker login "$GHCR_REGISTRY" -u "$GHCR_USER" --password-stdin 2>&1)" || GHCR_LOGIN_RC=$?
+  if [ "${GHCR_LOGIN_RC:-0}" -eq 0 ]; then
     if id tronsoftos >/dev/null 2>&1; then
       chown -R tronsoftos:tronsoftos "$APP_DIR/state/docker-config"
     fi
@@ -385,8 +389,11 @@ if [ -n "$GHCR_USER" ] && [ -n "$GHCR_TOKEN" ]; then
     [ ! -f "$APP_DIR/state/docker-config/config.json" ] || chmod 600 "$APP_DIR/state/docker-config/config.json"
     echo "Login $GHCR_REGISTRY salvo para uso do TronSoftOS."
   else
-    echo "Aviso: login $GHCR_REGISTRY falhou. Verifique as credenciais de instalacao." >&2
+    echo "Aviso: login $GHCR_REGISTRY falhou. A instalacao do TronSoftOS/TronFire continua." >&2
+    echo "Aviso: imagens privadas do TronComanda podem falhar ao subir ate corrigir as credenciais GHCR." >&2
+    echo "Resumo GHCR: $(printf '%s' "$GHCR_LOGIN_OUTPUT" | tail -n1)" >&2
   fi
+  unset GHCR_LOGIN_OUTPUT GHCR_LOGIN_RC
   unset GHCR_TOKEN TRONSOFTOS_GHCR_TOKEN GHCR_TOKEN_ENC GHCR_TOKEN_KEY TRONSOFTOS_GHCR_TOKEN_ENC TRONSOFTOS_GHCR_TOKEN_KEY
 else
   echo "Login GHCR nao configurado por credenciais de instalacao."

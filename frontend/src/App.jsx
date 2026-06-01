@@ -475,6 +475,7 @@ function ClusterView({ dashboard }) {
   const guard = guardQuery.data || cluster.guard || {};
   const networkImpact = networkImpactQuery.data || {};
   const sync = syncQuery.data || {};
+  const syncStatus = cluster.sync || sync || {};
   const [form, setForm] = useState(null);
   const [lockForm, setLockForm] = useState(null);
   const [syncForm, setSyncForm] = useState(null);
@@ -702,6 +703,40 @@ function ClusterView({ dashboard }) {
             </Card>
           </div>
           <div className="grid gap-5 xl:grid-cols-2">
+            <Card title="Sync HA" icon={RefreshCw} action={<StatusPill value={syncStatus.status || 'disabled'} />}>
+              <div className="grid gap-3 text-sm">
+                {[
+                  ['Status', syncStatus.status || (syncStatus.enabled ? 'enabled' : 'disabled')],
+                  ['Standby', syncStatus.standbyHost || 'nao configurado'],
+                  ['Usuario SSH', syncStatus.sshUser || 'tronsoftos'],
+                  ['Ultimo evento', syncStatus.lastEvent?.type || 'nenhum'],
+                  ['Quando', syncStatus.lastEvent?.createdAt ? formatDateTime(syncStatus.lastEvent.createdAt) : '-'],
+                  ['Exit code', syncStatus.lastEvent?.exitCode ?? '-']
+                ].map(([label, value]) => (
+                  <div key={label} className="flex items-center justify-between gap-4 border-b border-slate-100 pb-2">
+                    <span className="text-slate-500">{label}</span>
+                    <span className="text-right font-medium text-slate-950">{value}</span>
+                  </div>
+                ))}
+              </div>
+              {syncStatus.status === 'failed' ? (
+                <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  Ultima sincronizacao falhou. Verifique se o pareamento foi importado no standby e se o SSH para {syncStatus.sshUser || 'tronsoftos'}@{syncStatus.standbyHost || 'standby'} esta autorizado.
+                </div>
+              ) : syncStatus.status === 'success' ? (
+                <div className="mt-4 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">
+                  Ultima sincronizacao concluida com sucesso.
+                </div>
+              ) : syncStatus.enabled ? (
+                <div className="mt-4 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-800">
+                  Sync configurado. Use a aba Sync para executar uma sincronizacao manual.
+                </div>
+              ) : (
+                <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                  Sync HA ainda nao esta habilitado.
+                </div>
+              )}
+            </Card>
             <Card title="Protecao de duplo primary" icon={ShieldCheck} action={<StatusPill value={guard.canHoldVip ? 'online' : 'blocked'} />}>
               <div className="grid gap-3 text-sm">
                 {[
@@ -821,7 +856,14 @@ function ClusterView({ dashboard }) {
           ) : null}
           {pairingImportMutation.isSuccess ? (
             <div className="mt-4 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">
-              Pareamento importado. Reinicie TronSoftOS e TronFire para carregar os segredos no standby.
+              <div className="font-medium">Pareamento importado com sucesso.</div>
+              <div className="mt-1">
+                Chave SSH do primary: {pairingImportMutation.data?.sshKeyImported ? 'importada no authorized_keys' : 'nao encontrada no arquivo importado'}.
+              </div>
+              <div className="mt-1">Reinicie TronSoftOS e TronFire para carregar os segredos no standby.</div>
+              {pairingImportMutation.data?.paths?.authorizedKeys ? (
+                <div className="mt-1 truncate font-mono text-xs">{pairingImportMutation.data.paths.authorizedKeys}</div>
+              ) : null}
             </div>
           ) : null}
           {pairingImportMutation.isError ? (

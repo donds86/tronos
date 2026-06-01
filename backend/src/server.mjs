@@ -318,6 +318,31 @@ function publicHaSyncSettings(settings = rawHaSyncSettings()) {
   };
 }
 
+function haSyncStatus() {
+  const settings = publicHaSyncSettings();
+  const lastEvent = readEvents(200).find(event => ['HA_SYNC_STARTED', 'HA_SYNC_FINISHED', 'HA_SYNC_FAILED'].includes(event.type)) || null;
+  const runningJob = [...actionJobs.values()].reverse().find(job => job.app === 'ha-sync' && job.status === 'running') || null;
+  const lastExitCode = lastEvent?.details?.exitCode;
+  let status = 'disabled';
+  if (runningJob) status = 'running';
+  else if (settings.enabled && !settings.standbyHost) status = 'warning';
+  else if (settings.enabled && lastEvent?.type === 'HA_SYNC_FINISHED') status = 'success';
+  else if (settings.enabled && lastEvent?.type === 'HA_SYNC_FAILED') status = 'failed';
+  else if (settings.enabled && lastEvent?.type === 'HA_SYNC_STARTED') status = 'running';
+  else if (settings.enabled) status = 'enabled';
+  return {
+    ...settings,
+    status,
+    lastEvent: lastEvent ? {
+      type: lastEvent.type,
+      createdAt: lastEvent.createdAt,
+      exitCode: Number.isInteger(lastExitCode) ? lastExitCode : null,
+      error: lastEvent.details?.error || null
+    } : null,
+    runningJobId: runningJob?.id || null
+  };
+}
+
 function normalizeHaSyncSettings(body) {
   const current = rawHaSyncSettings();
   const next = {
@@ -985,7 +1010,8 @@ function clusterStatus() {
       routerId: process.env.HA_ROUTER_ID || null,
       nodeState: process.env.HA_NODE_ROLE || null,
       priority: process.env.HA_PRIORITY || null
-    }
+    },
+    sync: haSyncStatus()
   };
 }
 
@@ -1426,16 +1452,20 @@ async function importPairingFile(body) {
   appendEvent('CLUSTER_PAIRING_IMPORTED', {
     keys: Object.keys(pairing.values),
     clusterSecrets: result.clusterSecrets || clusterSecretsPath,
-    tronfireEnv: result.tronfireEnv || path.join(appRoot, 'apps/tronfire/.env')
+    tronfireEnv: result.tronfireEnv || path.join(appRoot, 'apps/tronfire/.env'),
+    sshKeyImported: result.sshKeyImported === true,
+    authorizedKeys: result.authorizedKeys || null
   });
   return {
     ok: true,
     importedKeys: Object.keys(pairing.values),
+    sshKeyImported: result.sshKeyImported === true,
     paths: {
       clusterSecrets: result.clusterSecrets || clusterSecretsPath,
       tronsoftosEnv: result.tronsoftosEnv || '/etc/tronsoftos/tronsoftos.env',
       tronfireEnv: result.tronfireEnv || path.join(appRoot, 'apps/tronfire/.env'),
-      troncomandaEnvUpdated: result.troncomandaEnvUpdated === true
+      troncomandaEnvUpdated: result.troncomandaEnvUpdated === true,
+      authorizedKeys: result.authorizedKeys || path.join(appRoot, '.ssh/authorized_keys')
     },
     reloadRequired: true,
     reloadHint: 'Reinicie TronSoftOS e TronFire para carregar os segredos importados.',
@@ -1806,6 +1836,8 @@ function startStandbyKeepalived(action, body = {}) {
   const sshPort = String(settings.sshPort || 22);
   const remoteCommand = `sudo -n systemctl ${action} keepalived.service`;
   const knownHosts = path.join(stateDir, 'known_hosts');
+  const identityFile = path.join(stateDir, 'ssh/id_ed25519');
+  if (!fs.existsSync(identityFile)) throw new Error(`chave SSH nao encontrada: ${identityFile}`);
   fs.mkdirSync(path.dirname(knownHosts), { recursive: true });
   fs.closeSync(fs.openSync(knownHosts, 'a'));
   return startCommandJob({
@@ -1814,6 +1846,8 @@ function startStandbyKeepalived(action, body = {}) {
     command: 'ssh',
     args: [
       '-p', sshPort,
+      '-i', identityFile,
+      '-o', 'IdentitiesOnly=yes',
       '-o', 'BatchMode=yes',
       '-o', 'StrictHostKeyChecking=accept-new',
       '-o', `UserKnownHostsFile=${knownHosts}`,
