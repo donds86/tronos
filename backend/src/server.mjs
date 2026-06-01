@@ -949,6 +949,32 @@ async function fetchHealth(url) {
   }
 }
 
+async function tronfireAlerts() {
+  const token = process.env.TRONSOFTOS_INTERNAL_TOKEN || '';
+  if (!token) return [];
+  try {
+    const target = tronfireProxyTarget();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2500);
+    const response = await fetch(new URL('/api/internal/alerts', target), {
+      signal: controller.signal,
+      headers: { 'x-tronsoftos-token': token }
+    });
+    clearTimeout(timeout);
+    if (!response.ok) return [];
+    const alerts = await response.json();
+    return Array.isArray(alerts) ? alerts.map(alert => ({
+      source: 'TronFire',
+      severity: String(alert.severity || 'warning').toLowerCase(),
+      message: alert.message || alert.type || 'Alerta TronFire',
+      type: alert.type || null,
+      createdAt: alert.createdAt || null
+    })) : [];
+  } catch {
+    return [];
+  }
+}
+
 function checkSeverity(ok, warn = false) {
   if (ok) return 'ok';
   return warn ? 'warning' : 'error';
@@ -1524,6 +1550,7 @@ async function dashboard() {
   if (backups.quota?.percentUsed >= 97) alerts.push({ severity: 'critical', message: `Google Drive com ${backups.quota.percentUsed}% de uso` });
   else if (backups.quota?.percentUsed >= 90) alerts.push({ severity: 'warning', message: `Google Drive com ${backups.quota.percentUsed}% de uso` });
   if (backups.quota && backups.quota.ok === false) alerts.push({ severity: 'warning', message: `Falha ao consultar espaco do Google Drive: ${backups.quota.error}` });
+  alerts.push(...await tronfireAlerts());
   return {
     generatedAt: new Date().toISOString(),
     cluster,

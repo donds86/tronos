@@ -425,6 +425,9 @@ async function dashboard() {
         <a class="btn btn-sm ${range === 'month' ? 'btn-primary' : 'btn-ghost-primary'}" href="#dashboard?range=month">30d</a>
       </div>
     </div>
+    <div class="mb-3">
+      ${dashboardAlertShortcut(data.alerts)}
+    </div>
     <div class="row row-cards zbx-board mb-3">
       <div class="col-sm-6 col-xl-3"><div class="card summary-card"><div class="card-body"><div class="subheader">Bancos</div><div class="h1 mb-0">${data.databases.length}</div></div></div></div>
       <div class="col-sm-6 col-xl-3"><div class="card summary-card"><div class="card-body"><div class="subheader">Producao</div><div class="h3 mb-0 text-truncate">${escapeHtml(prod?.name || 'Nao definido')}</div></div></div></div>
@@ -445,9 +448,6 @@ async function dashboard() {
       ${zabbixGraphCard('Firebird: trafego de saida por coleta', firebirdTarget === 'firebird_host' ? 'Indisponivel por processo no modo host' : 'Delta entre coletas do container', lineChart(netOut.map((p, i, arr) => i === 0 ? { ...p, v: 0 } : { ...p, v: Math.max(p.v - arr[i - 1].v, 0) }), 'B'))}
       ${zabbixGraphCard('Firebird: escrita em disco por coleta', firebirdTarget === 'firebird_host' ? 'Delta de I/O do processo no host' : 'Delta de Block I/O gravado', lineChart(blockOut.map((p, i, arr) => i === 0 ? { ...p, v: 0 } : { ...p, v: Math.max(p.v - arr[i - 1].v, 0) }), 'B'))}
       ${zabbixGraphCard(`Banco principal: crescimento em GB`, prod?.alias ? `Alias: ${prod.alias}` : 'Sem banco principal definido', lineChart(dbSizeSeries, 'GB'), 'col-lg-8')}
-      <div class="col-lg-4">
-        ${dashboardAlertShortcut(data.alerts)}
-      </div>
     </div>
     <div class="row row-cards">
       <div class="col-lg-8">
@@ -890,13 +890,16 @@ async function backups() {
         </div>
       </div>
     </div></div>
-    <div class="card"><div class="table-responsive"><table class="table"><thead><tr><th>Banco</th><th>Status</th><th>Externo</th><th>Arquivo</th><th>Tamanho</th><th>Data</th><th>Acoes</th></tr></thead><tbody>${jobs.map(j => {
+    <div class="card"><div class="table-responsive"><table class="table"><thead><tr><th>Banco</th><th>Status</th><th>Validacao</th><th>Externo</th><th>Arquivo</th><th>Tamanho</th><th>Data</th><th>Acoes</th></tr></thead><tbody>${jobs.map(j => {
     const externalText = j.driveStatus === 'UPLOADED'
       ? `Google Drive OK${j.driveWebLink ? ` - ${escapeHtml(j.driveWebLink)}` : ''}`
       : j.driveStatus === 'TRONSOFTOS'
         ? 'TronSoftOS'
         : `${escapeHtml(j.driveStatus || 'TRONSOFTOS')}${j.driveErrorMessage ? ` - ${escapeHtml(j.driveErrorMessage)}` : ''}`;
-    return `<tr><td>${escapeHtml(j.database?.name || '')}</td><td>${escapeHtml(j.status)}</td><td>${externalText}</td><td>${escapeHtml(j.backupPath || '')}</td><td>${formatBytes(j.backupSize || 0)}</td><td>${new Date(j.createdAt).toLocaleString()}</td><td>${j.status === 'SUCCESS' ? `<a class="btn btn-sm btn-outline-primary" href="${apiUrl(`/api/backups/${j.id}/download`)}">Download</a>` : escapeHtml(j.errorMessage || '')}</td></tr>`;
+    const validationText = j.validation?.ok
+      ? `Restaurado OK${j.validation.validatedAt ? ` - ${new Date(j.validation.validatedAt).toLocaleString()}` : ''}`
+      : j.status === 'SUCCESS' ? 'Nao validado' : '-';
+    return `<tr><td>${escapeHtml(j.database?.name || '')}</td><td>${escapeHtml(j.status)}</td><td>${escapeHtml(validationText)}</td><td>${externalText}</td><td>${escapeHtml(j.backupPath || '')}</td><td>${formatBytes(j.backupSize || 0)}</td><td>${new Date(j.createdAt).toLocaleString()}</td><td>${j.status === 'SUCCESS' ? `<a class="btn btn-sm btn-outline-primary" href="${apiUrl(`/api/backups/${j.id}/download`)}">Download</a>` : escapeHtml(j.errorMessage || '')}</td></tr>`;
   }).join('')}</tbody></table></div></div>`;
   const cleanupQuery = () => `olderThanDays=${encodeURIComponent(cleanupDays.value || 0)}&keepLastPerDatabase=${encodeURIComponent(cleanupKeep.value || 0)}`;
   btnPreviewCleanup.onclick = async () => {

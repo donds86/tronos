@@ -98,6 +98,15 @@ function firebirdCreateTarget(filePath) {
   return firebirdDbConnect(filePath);
 }
 
+function backupValidationFor(logPath) {
+  return {
+    ok: true,
+    method: 'gbak-restore-gstat',
+    validatedAt: new Date().toISOString(),
+    logPath
+  };
+}
+
 function shellErrorText(err) {
   return [err?.stdout, err?.stderr, err?.message].filter(Boolean).join('\n').trim() || String(err);
 }
@@ -431,7 +440,7 @@ async function ensureDatabaseFromTemplate(filePath) {
   await dockerExec(['sh', '-lc', cmd], { timeout: 120000 });
 }
 
-function backupManifestFor(db, backupPath, sha) {
+function backupManifestFor(db, backupPath, sha, validation = null) {
   return {
     databaseId: db.id,
     databaseAlias: db.alias,
@@ -442,13 +451,14 @@ function backupManifestFor(db, backupPath, sha) {
     backupFinishedAt: new Date().toISOString(),
     firebirdVersion: '2.5.9',
     productionPath: db.filePath,
-    standbyPath: db.standbyPath || standbyPathForAlias(db.alias)
+    standbyPath: db.standbyPath || standbyPathForAlias(db.alias),
+    validation
   };
 }
 
-function writeBackupManifest(db, backupPath, sha) {
+function writeBackupManifest(db, backupPath, sha, validation = null) {
   const manifestPath = `${backupPath}.manifest.json`;
-  fs.writeFileSync(manifestPath, `${JSON.stringify(backupManifestFor(db, backupPath, sha), null, 2)}\n`);
+  fs.writeFileSync(manifestPath, `${JSON.stringify(backupManifestFor(db, backupPath, sha, validation), null, 2)}\n`);
   return manifestPath;
 }
 
@@ -460,6 +470,15 @@ function readBackupManifest(manifestPath) {
   return JSON.parse(fs.readFileSync(value, 'utf8'));
 }
 
+function backupValidationStatus(job) {
+  try {
+    if (!job.manifestPath || !fs.existsSync(job.manifestPath)) return null;
+    return readBackupManifest(job.manifestPath).validation || null;
+  } catch {
+    return null;
+  }
+}
+
 async function uploadBackupJobToExternal(req, db, jobId, backupPath) {
   await prisma.backupJob.update({
     where: { id: jobId },
@@ -467,6 +486,51 @@ async function uploadBackupJobToExternal(req, db, jobId, backupPath) {
   });
   await audit(req, 'BACKUP_EXTERNAL_MANAGED_BY_TRONSOFTOS', { entityType: 'backup', entityId: jobId, details: { database: db.alias, backupPath } });
   return { skipped: true, managedBy: 'TronSoftOS' };
+}
+
+async function validateBackupRestore(db, backupPath, logPath, token = timestamp14()) {
+  const bin = process.env.FIREBIRD_BIN || '/usr/local/firebird/bin';
+  const password = shQuote(process.env.FIREBIRD_PASSWORD || 'masterkey');
+  const gbak = shQuote(`${bin}/gbak`);
+  const gstat = shQuote(`${bin}/gstat`);
+  const tempRestorePath = `/firebird/restore-work/${db.alias}_backup_validate_${token}.fdb`;
+  const cmd = [
+    'set -e',
+    `backup=${shQuote(backupPath)}`,
+    `restore=${shQuote(tempRestorePath)}`,
+    `log=${shQuote(logPath)}`,
+    'fail() { code="$1"; shift; echo "$*" >> "$log"; test -f "$log" && cat "$log"; exit "$code"; }',
+    'mkdir -p /firebird/restore-work /firebird/logs',
+    'test -f "$backup" || fail 80 "Backup nao encontrado para validacao: $backup"',
+    'rm -f "$restore"',
+    'echo "[validacao] restaurando backup em area temporaria" >> "$log"',
+    'restore_src="$backup"',
+    'case "$backup" in *.gz) restore_src="/tmp/tronfire_backup_validate_${RANDOM}.gbk"; gzip -dc "$backup" > "$restore_src" || fail 81 "Falha ao descompactar backup para validacao" ;; esac',
+    `${gbak} -c -v -user SYSDBA -password ${password} "$restore_src" ${shQuote(firebirdCreateTarget(tempRestorePath))} >> "$log" 2>&1 || fail 82 "Falha ao restaurar backup para validacao"`,
+    'if [ "$restore_src" != "$backup" ]; then rm -f "$restore_src" || true; fi',
+    'test -f "$restore" || fail 83 "Restore de validacao terminou sem arquivo restaurado"',
+    `${gstat} -h "$restore" >> "$log" 2>&1 || fail 84 "Falha no gstat do backup restaurado"`,
+    'rm -f "$restore"',
+    'echo "[validacao] backup aprovado" >> "$log"'
+  ].join('; ');
+  await dockerExec(['sh', '-lc', cmd], { timeout: 1000 * 60 * 60 * 4 });
+  return backupValidationFor(logPath);
+}
+
+function quarantineInvalidBackup(backupPath, manifestPath = null) {
+  const moved = [];
+  try {
+    fs.mkdirSync('/firebird/quarantine', { recursive: true });
+    for (const filePath of [backupPath, manifestPath].filter(Boolean)) {
+      if (!fs.existsSync(filePath)) continue;
+      const target = `/firebird/quarantine/${path.basename(filePath)}`;
+      fs.renameSync(filePath, target);
+      moved.push(target);
+    }
+  } catch {
+    // Keep the original error path; quarantine is best effort.
+  }
+  return moved;
 }
 
 app.get('/health', async () => ({ ok: true, app: 'TronFire', version: '0.1.0', deploymentMode, nodeRole }));
@@ -616,6 +680,11 @@ app.get('/api/alerts', { preHandler: requireAuth }, async (req) => {
     ...(status === 'active' ? { resolved: false } : status === 'resolved' ? { resolved: true } : {})
   };
   return prisma.alert.findMany({ where, orderBy: { createdAt: 'desc' }, take: 250 });
+});
+
+app.get('/api/internal/alerts', async (req) => {
+  assertInternalTronsoftos(req);
+  return prisma.alert.findMany({ where: { resolved: false }, orderBy: { createdAt: 'desc' }, take: 20 });
 });
 
 app.patch('/api/alerts/:id/resolve', { preHandler: requireOperator }, async (req) => {
@@ -942,7 +1011,8 @@ app.post('/api/databases/:id/auto-maintenance', { preHandler: requireOperator },
     const { stdout: sizeOut } = await dockerExec(['stat', '-c', '%s', backupPath]);
     const { stdout: shaOut } = await dockerExec(['sha256sum', backupPath]);
     const sha = shaOut.trim().split(/\s+/)[0];
-    writeBackupManifest(db, backupPath, sha);
+    const validation = await validateBackupRestore(db, backupPath, logPath, stamp);
+    writeBackupManifest(db, backupPath, sha, validation);
     await prisma.managedDatabase.update({
       where: { id: db.id },
       data: { status: 'ONLINE', lastCheckAt: new Date(), lastBackupAt: new Date() }
@@ -969,6 +1039,7 @@ app.post('/api/databases/:id/auto-maintenance', { preHandler: requireOperator },
     };
   } catch (err) {
     const error = shellErrorText(err);
+    const quarantined = quarantineInvalidBackup(backupPath, manifestPath);
     await prisma.backupJob.update({
       where: { id: job.id },
       data: { status: 'FAILED', finishedAt: new Date(), errorMessage: error }
@@ -978,7 +1049,7 @@ app.post('/api/databases/:id/auto-maintenance', { preHandler: requireOperator },
     await audit(req, 'DATABASE_AUTO_MAINTENANCE_FAILED', {
       entityType: 'database',
       entityId: db.id,
-      details: { backupPath, safetyCopyPath, repairedPath, logPath, error }
+      details: { backupPath, safetyCopyPath, repairedPath, logPath, error, quarantined }
     });
     return reply.code(500).send({ error, backupPath, safetyCopyPath, logPath });
   }
@@ -999,7 +1070,8 @@ app.post('/api/backups/:databaseId/run', { preHandler: requireOperator }, async 
     const { stdout: sizeOut } = await dockerExec(['stat','-c','%s', backupPath]);
     const { stdout: shaOut } = await dockerExec(['sha256sum', backupPath]);
     const sha = shaOut.trim().split(/\s+/)[0];
-    writeBackupManifest(db, backupPath, sha);
+    const validation = await validateBackupRestore(db, backupPath, logPath, stamp);
+    writeBackupManifest(db, backupPath, sha, validation);
     await prisma.managedDatabase.update({ where: { id: db.id }, data: { lastBackupAt: new Date() } });
     const done = await prisma.backupJob.update({ where: { id: job.id }, data: { status: 'SUCCESS', finishedAt: new Date(), backupSize: BigInt(sizeOut.trim()), sha256: sha } });
     await audit(req, 'BACKUP_FINISHED', { entityType: 'backup', entityId: job.id, details: { database: db.alias } });
@@ -1007,16 +1079,17 @@ app.post('/api/backups/:databaseId/run', { preHandler: requireOperator }, async 
     const updated = await prisma.backupJob.findUniqueOrThrow({ where: { id: job.id } });
     return { ...updated, backupSize: updated.backupSize?.toString(), drive };
   } catch (err) {
+    const quarantined = quarantineInvalidBackup(backupPath, manifestPath);
     await prisma.backupJob.update({ where: { id: job.id }, data: { status: 'FAILED', finishedAt: new Date(), errorMessage: err.message } });
     await prisma.alert.create({ data: { type: 'BACKUP_FAILED', severity: 'CRITICAL', message: `Backup falhou: ${db.name}` } });
-    await audit(req, 'BACKUP_FAILED', { entityType: 'backup', entityId: job.id, details: { error: err.message } });
+    await audit(req, 'BACKUP_FAILED', { entityType: 'backup', entityId: job.id, details: { error: err.message, quarantined } });
     throw err;
   }
 });
 
 app.get('/api/backups', { preHandler: requireOperator }, async () => {
   const jobs = await prisma.backupJob.findMany({ include: { database: true }, orderBy: { createdAt: 'desc' }, take: 50 });
-  return jobs.map(j => ({ ...j, backupSize: j.backupSize?.toString() }));
+  return jobs.map(j => ({ ...j, backupSize: j.backupSize?.toString(), validation: backupValidationStatus(j) }));
 });
 
 app.get('/api/backups/cleanup/preview', { preHandler: requireOperator }, async (req) => {
@@ -1195,6 +1268,7 @@ app.post('/api/ha/standby/restore', async (req, reply) => {
   const sourcePath = String(body.backupPath || '').trim();
   if (!isReceivedBackupPath(sourcePath)) return reply.code(400).send({ error: 'backupPath invalido' });
   const manifest = body.manifestPath ? readBackupManifest(body.manifestPath) : null;
+  if (!manifest?.validation?.ok) return reply.code(400).send({ error: 'backup sem validacao de restore aprovada' });
   const alias = normalizeAlias(body.databaseAlias || manifest?.databaseAlias || path.basename(sourcePath).split('_').slice(0, -1).join('_'));
   const db = await prisma.managedDatabase.findUnique({ where: { alias } });
   if (!db) return reply.code(404).send({ error: `Banco nao cadastrado para alias ${alias}` });
@@ -1212,9 +1286,11 @@ app.post('/api/ha/standby/restore', async (req, reply) => {
       `temp_dest=${shQuote(tempRestorePath)}`,
       `standby=${shQuote(standbyPath)}`,
       `log=${shQuote(logPath)}`,
+      `expected_sha=${shQuote(manifest?.backupSha256 || '')}`,
       'fail() { code="$1"; shift; echo "$*"; test -f "$log" && cat "$log"; exit "$code"; }',
       'mkdir -p /firebird/standby /firebird/restore-work /firebird/logs || fail 60 "Nao foi possivel criar diretorios de standby"',
       'test -f "$src" || fail 61 "Arquivo de backup recebido nao encontrado: $src"',
+      'if [ -n "$expected_sha" ]; then actual_sha="$(sha256sum "$src" | awk \'{print $1}\')"; [ "$actual_sha" = "$expected_sha" ] || fail 71 "SHA256 do backup recebido nao confere"; fi',
       'rm -f "$temp_dest" || fail 62 "Nao foi possivel remover restore standby temporario anterior: $temp_dest"',
       'restore_src="$src"',
       'case "$src" in *.gz) restore_src="/tmp/tronfire_standby_restore_${RANDOM}.gbk"; gzip -dc "$src" > "$restore_src" || fail 63 "Falha ao descompactar backup standby: $src" ;; esac',

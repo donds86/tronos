@@ -67,6 +67,10 @@ function firebirdDbConnect(filePath) {
   return value;
 }
 
+function firebirdCreateTarget(filePath) {
+  return firebirdDbConnect(filePath);
+}
+
 function backupStamp() {
   return new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
 }
@@ -363,6 +367,52 @@ async function uploadBackupJobToExternal(db, jobId, backupPath) {
   console.log(`[worker] upload externo gerenciado pelo TronSoftOS: ${db.alias} ${backupPath}`);
 }
 
+async function validateBackupRestore(db, backupPath, logPath, stamp) {
+  const tempRestorePath = `/firebird/restore-work/${db.alias}_backup_validate_${stamp}.fdb`;
+  const cmd = [
+    'set -e',
+    `backup=${shQuote(backupPath)}`,
+    `restore=${shQuote(tempRestorePath)}`,
+    `log=${shQuote(logPath)}`,
+    'fail() { code="$1"; shift; echo "$*" >> "$log"; test -f "$log" && cat "$log"; exit "$code"; }',
+    'mkdir -p /firebird/restore-work /firebird/logs',
+    'test -f "$backup" || fail 80 "Backup nao encontrado para validacao: $backup"',
+    'rm -f "$restore"',
+    'echo "[validacao] restaurando backup em area temporaria" >> "$log"',
+    'restore_src="$backup"',
+    'case "$backup" in *.gz) restore_src="/tmp/tronfire_backup_validate_${RANDOM}.gbk"; gzip -dc "$backup" > "$restore_src" || fail 81 "Falha ao descompactar backup para validacao" ;; esac',
+    `${shQuote(`${FIREBIRD_BIN}/gbak`)} -c -v -user SYSDBA -password ${shQuote(FIREBIRD_PASSWORD)} "$restore_src" ${shQuote(firebirdCreateTarget(tempRestorePath))} >> "$log" 2>&1 || fail 82 "Falha ao restaurar backup para validacao"`,
+    'if [ "$restore_src" != "$backup" ]; then rm -f "$restore_src" || true; fi',
+    'test -f "$restore" || fail 83 "Restore de validacao terminou sem arquivo restaurado"',
+    `${shQuote(`${FIREBIRD_BIN}/gstat`)} -h "$restore" >> "$log" 2>&1 || fail 84 "Falha no gstat do backup restaurado"`,
+    'rm -f "$restore"',
+    'echo "[validacao] backup aprovado" >> "$log"'
+  ].join('; ');
+  await dockerExec(['sh', '-lc', cmd], 1000 * 60 * 60 * 4);
+  return {
+    ok: true,
+    method: 'gbak-restore-gstat',
+    validatedAt: new Date().toISOString(),
+    logPath
+  };
+}
+
+function quarantineInvalidBackup(backupPath, manifestPath = null) {
+  const moved = [];
+  try {
+    fs.mkdirSync('/firebird/quarantine', { recursive: true });
+    for (const filePath of [backupPath, manifestPath].filter(Boolean)) {
+      if (!fs.existsSync(filePath)) continue;
+      const target = `/firebird/quarantine/${filePath.split('/').pop()}`;
+      fs.renameSync(filePath, target);
+      moved.push(target);
+    }
+  } catch {
+    // Best effort: the backup job remains FAILED even if quarantine cannot move files.
+  }
+  return moved;
+}
+
 async function runBackup(db, reason = 'AUTO') {
   if (!isPrimaryNode()) {
     console.log(`[worker] backup ${reason} ignorado no no ${TRONFIRE_NODE_ROLE}: ${db.alias}`);
@@ -392,6 +442,7 @@ async function runBackup(db, reason = 'AUTO') {
     const { stdout: sizeOut } = await dockerExec(['stat','-c','%s', backupPath]);
     const { stdout: shaOut } = await dockerExec(['sha256sum', backupPath]);
     const sha = shaOut.trim().split(/\s+/)[0];
+    const validation = await validateBackupRestore(db, backupPath, logPath, stamp);
     const manifest = {
       databaseId: db.id,
       databaseAlias: db.alias,
@@ -402,7 +453,8 @@ async function runBackup(db, reason = 'AUTO') {
       backupFinishedAt: new Date().toISOString(),
       firebirdVersion: '2.5.9',
       productionPath: db.filePath,
-      standbyPath: db.standbyPath || `/firebird/standby/${db.alias}_standby.fdb`
+      standbyPath: db.standbyPath || `/firebird/standby/${db.alias}_standby.fdb`,
+      validation
     };
     fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
     await prisma.managedDatabase.update({ where: { id: db.id }, data: { lastBackupAt: new Date() } });
@@ -413,9 +465,10 @@ async function runBackup(db, reason = 'AUTO') {
     await uploadBackupJobToExternal(db, job.id, backupPath);
     console.log(`[worker] backup ${reason} OK: ${db.alias}`);
   } catch (err) {
+    const quarantined = quarantineInvalidBackup(backupPath, manifestPath);
     await prisma.backupJob.update({
       where: { id: job.id },
-      data: { status: 'FAILED', finishedAt: new Date(), errorMessage: err.message }
+      data: { status: 'FAILED', finishedAt: new Date(), errorMessage: `${err.message}${quarantined.length ? ` | quarentena: ${quarantined.join(', ')}` : ''}` }
     });
     await prisma.alert.create({ data: { type: 'BACKUP_FAILED', severity: 'CRITICAL', message: `Backup falhou: ${db.name}` } });
     console.error(`[worker] backup ${reason} erro: ${db.alias}`, err.message);

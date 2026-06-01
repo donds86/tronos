@@ -34,17 +34,27 @@ TRONSOFTOS_APP_DIR="$APP_DIR" TRONFIRE_CATALOG_EXPORT_DIR="$CATALOG_DIR" bash "$
 echo "[ha-sync] preparando diretorios no standby"
 ssh ${SSH_BASE_OPTS} "${SSH_USER}@${STANDBY_HOST}" "mkdir -p '$REMOTE_BACKUP_DIR' '$REMOTE_CATALOG_DIR'"
 
+VALID_BACKUP_LIST="$(mktemp)"
+trap 'rm -f "$VALID_BACKUP_LIST"' EXIT
+find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.manifest.json' | while IFS= read -r manifest; do
+  if ! grep -q '"validation"' "$manifest" || ! grep -q '"ok": true' "$manifest"; then
+    continue
+  fi
+  backup_path="$(sed -n 's/.*"backupPath": "\([^"]*\)".*/\1/p' "$manifest" | head -n 1)"
+  [ -f "$backup_path" ] || continue
+  printf '%s\n' "$(basename "$backup_path")" "$(basename "$manifest")" >> "$VALID_BACKUP_LIST"
+done
+
 echo "[ha-sync] sincronizando backups Firebird"
-rsync -aHAX --numeric-ids \
-  -e "$RSYNC_SSH" \
-  --include='*.gbk' \
-  --include='*.fbk' \
-  --include='*.gbk.gz' \
-  --include='*.fbk.gz' \
-  --include='*.manifest.json' \
-  --exclude='*' \
-  "${BACKUP_DIR%/}/" \
-  "${SSH_USER}@${STANDBY_HOST}:${REMOTE_BACKUP_DIR%/}/"
+if [ -s "$VALID_BACKUP_LIST" ]; then
+  rsync -aHAX --numeric-ids \
+    -e "$RSYNC_SSH" \
+    --files-from="$VALID_BACKUP_LIST" \
+    "${BACKUP_DIR%/}/" \
+    "${SSH_USER}@${STANDBY_HOST}:${REMOTE_BACKUP_DIR%/}/"
+else
+  echo "[ha-sync] nenhum backup validado para sincronizar"
+fi
 
 echo "[ha-sync] sincronizando catalogo TronFire/PostgreSQL"
 rsync -aHAX --numeric-ids \
