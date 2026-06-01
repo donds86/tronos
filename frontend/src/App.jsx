@@ -43,16 +43,12 @@ import 'reactflow/dist/style.css';
 
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'diagnostics', label: 'Diagnostico', icon: CheckCircle2 },
   { id: 'apps', label: 'Apps', icon: Boxes },
   { id: 'tronfire', label: 'TronFire', icon: Database },
   { id: 'cluster', label: 'Cluster HA', icon: GitBranch },
   { id: 'backups', label: 'Backups', icon: UploadCloud },
   { id: 'cloudflare', label: 'Cloudflare', icon: Cloud },
-  { id: 'maintenance', label: 'Manutencao', icon: Power },
-  { id: 'updates', label: 'Atualizacoes', icon: RefreshCw },
-  { id: 'events', label: 'Eventos', icon: Terminal },
-  { id: 'settings', label: 'Ajustes', icon: Settings }
+  { id: 'maintenance', label: 'Manutencao', icon: Power }
 ];
 
 const fallbackDashboard = {
@@ -138,11 +134,13 @@ function statusClass(status) {
     online: 'bg-green-100 text-green-800 border-green-200',
     running: 'bg-green-100 text-green-800 border-green-200',
     primary: 'bg-green-100 text-green-800 border-green-200',
+    success: 'bg-green-100 text-green-800 border-green-200',
     degraded: 'bg-amber-100 text-amber-800 border-amber-200',
     warning: 'bg-amber-100 text-amber-800 border-amber-200',
     blocked: 'bg-red-100 text-red-800 border-red-200',
     'promotion-allowed': 'bg-amber-100 text-amber-800 border-amber-200',
-    standby: 'bg-sky-100 text-sky-800 border-sky-200',
+    standby: 'bg-blue-100 text-blue-800 border-blue-200',
+    receptor: 'bg-blue-100 text-blue-800 border-blue-200',
     recovery: 'bg-violet-100 text-violet-800 border-violet-200',
     disabled: 'bg-slate-100 text-slate-700 border-slate-200',
     offline: 'bg-red-100 text-red-800 border-red-200',
@@ -1306,16 +1304,8 @@ function CloudflareView({ dashboard }) {
   });
   const setValue = (key, value) => setForm(previous => ({ ...(previous || values), [key]: value }));
   return (
-    <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
-      <Card title="Cloudflare" icon={Cloud}>
-        <div className="grid gap-4 md:grid-cols-4">
-          <Stat label="Registro" value={cloudflare.recordName || '-'} detail={cloudflare.recordType || 'A'} icon={Cloud} />
-          <Stat label="Destino" value={cloudflare.targetIp || '-'} detail="VIP ou IP ativo" icon={Zap} />
-          <Stat label="Token" value={cloudflare.tokenConfigured ? 'OK' : 'Pendente'} detail="API Cloudflare" icon={ShieldCheck} tone={cloudflare.tokenConfigured ? 'green' : 'amber'} />
-          <Stat label="Proxy" value={cloudflare.proxied ? 'Ativo' : 'DNS only'} detail="proxied" icon={Activity} />
-        </div>
-      </Card>
-      <Card title="DNS Cloudflare" icon={Cloud}>
+    <div className="max-w-5xl">
+      <Card title="Cloudflare" icon={Cloud} action={<StatusPill value={cloudflare.tokenConfigured ? 'online' : 'warning'} />}>
         <form
           className="grid gap-3 md:grid-cols-2"
           onSubmit={event => {
@@ -1363,14 +1353,7 @@ function CloudflareView({ dashboard }) {
           {saveMutation.isError || testMutation.isError || syncMutation.isError ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 md:col-span-2">{saveMutation.error?.message || testMutation.error?.message || syncMutation.error?.message}</div> : null}
         </form>
       </Card>
-      <Card title="Padrao recomendado" icon={ShieldCheck}>
-        <div className="space-y-3 text-sm text-slate-700">
-          <p>Use um subdominio por cliente e aponte para o VIP quando houver HA.</p>
-          <p>Em cliente simples, o destino pode ser o IP fixo do servidor ou o endpoint definido pelo Cloudflare Tunnel.</p>
-          <p>O token deve ter permissao de editar DNS somente na zona usada pela TronSoft ou pela revenda.</p>
-        </div>
-      </Card>
-      </div>
+    </div>
   );
 }
 
@@ -1445,9 +1428,10 @@ function ConfirmAction({ label, icon: Icon, confirmation, tone = 'slate', disabl
   );
 }
 
-function MaintenanceView() {
+function MaintenanceView({ dashboard }) {
   const queryClient = useQueryClient();
   const maintenanceQuery = useQuery({ queryKey: ['maintenance'], queryFn: () => api('/api/maintenance'), refetchInterval: 10000 });
+  const [tab, setTab] = useState('ha');
   const [jobId, setJobId] = useState(null);
   const actionMutation = useMutation({
     mutationFn: ({ path, confirmation }) => postApi(path, { confirmation }),
@@ -1468,6 +1452,14 @@ function MaintenanceView() {
   const sync = data.sync || {};
   const busy = actionMutation.isPending || jobQuery.data?.status === 'running';
   const run = path => payload => actionMutation.mutate({ path, ...payload });
+  const maintenanceTabs = [
+    { id: 'ha', label: 'Failover HA', icon: ShieldCheck },
+    { id: 'power', label: 'Energia', icon: Power },
+    { id: 'keepalived', label: 'Keepalived', icon: Network },
+    { id: 'diagnostics', label: 'Diagnostico', icon: CheckCircle2 },
+    { id: 'events', label: 'Eventos', icon: Terminal },
+    { id: 'settings', label: 'Ajustes', icon: Settings }
+  ];
 
   return (
     <div className="space-y-5">
@@ -1480,7 +1472,9 @@ function MaintenanceView() {
 
       {jobQuery.data ? <ActionTerminal job={jobQuery.data} /> : null}
 
-      <div className="grid gap-5 xl:grid-cols-2">
+      <SubTabs items={maintenanceTabs} active={tab} onChange={setTab} />
+
+      {tab === 'ha' ? (
         <Card title="Failover em manutencao" icon={ShieldCheck} action={<StatusPill value={sync.standbyHost ? 'online' : 'warning'} />}>
           <div className="mb-4 grid gap-3 text-sm">
             {[
@@ -1501,17 +1495,21 @@ function MaintenanceView() {
           </div>
           {actionMutation.isError ? <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{actionMutation.error.message}</div> : null}
         </Card>
+      ) : null}
 
+      {tab === 'power' ? (
         <Card title="Energia do host local" icon={Power} action={<StatusPill value="critico" />}>
           <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-            Reiniciar ou desligar o host local pode interromper a producao. Para reiniciar o primary sem failover, suspenda o keepalived no standby antes.
+            Em primary com standby configurado, o TronSoftOS suspende o failover no standby antes de reiniciar ou desligar este host.
           </div>
           <div className="grid gap-3 md:grid-cols-2">
             <ConfirmAction label="Reiniciar host" icon={RefreshCw} confirmation="REINICIAR HOST" tone="amber" disabled={busy} onConfirm={run('/api/maintenance/host/reboot')} />
             <ConfirmAction label="Desligar host" icon={Power} confirmation="DESLIGAR HOST" tone="red" disabled={busy} onConfirm={run('/api/maintenance/host/poweroff')} />
           </div>
         </Card>
+      ) : null}
 
+      {tab === 'keepalived' ? (
         <Card title="Keepalived local" icon={Network}>
           <div className="mb-4 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
             Use estes controles apenas quando estiver operando diretamente no no correto. Em manutencao planejada do primary, normalmente voce suspende o keepalived no standby.
@@ -1521,7 +1519,11 @@ function MaintenanceView() {
             <ConfirmAction label="Iniciar keepalived local" icon={Play} confirmation="REATIVAR LOCAL" disabled={busy} onConfirm={run('/api/maintenance/local/keepalived/start')} />
           </div>
         </Card>
-      </div>
+      ) : null}
+
+      {tab === 'diagnostics' ? <DiagnosticsView /> : null}
+      {tab === 'events' ? <EventsView /> : null}
+      {tab === 'settings' ? <SettingsView dashboard={dashboard} /> : null}
     </div>
   );
 }
@@ -1667,13 +1669,6 @@ function SmtpSettings() {
 function SettingsView({ dashboard }) {
   return (
     <div className="space-y-5">
-      <Card title="Ajustes" icon={Settings}>
-        <div className="grid gap-4 md:grid-cols-3">
-          <Stat label="Firebird" value="2.5.9" detail="host ou container" icon={Database} />
-          <Stat label="Rclone" value="Host" detail="Debian/systemd" icon={HardDrive} />
-          <Stat label="Containers" value="Catalogo" detail="managed-apps.json" icon={Boxes} />
-        </div>
-      </Card>
       <NetworkSettings />
       <SmtpSettings />
     </div>
@@ -1737,28 +1732,31 @@ export default function App() {
   const dashboard = dashboardQuery.data || fallbackDashboard;
   const appActionPending = actionMutation.isPending || actionJobQuery.data?.status === 'running';
   const activeItem = useMemo(() => navItems.find(item => item.id === active) || navItems[0], [active]);
+  const haMaintenance = dashboard.cluster?.maintenance;
+  const haMaintenanceActive = haMaintenance?.active === true;
 
   const View = {
     dashboard: <DashboardView dashboard={dashboard} />,
-    diagnostics: <DiagnosticsView />,
     apps: <AppsView dashboard={dashboard} actionPending={appActionPending} actionJob={actionJobQuery.data} onAction={(app, action) => actionMutation.mutate({ app, action })} />,
     tronfire: <TronFireView section="dashboard" />,
     cluster: <ClusterView dashboard={dashboard} />,
     backups: <BackupsView dashboard={dashboard} />,
     cloudflare: <CloudflareView dashboard={dashboard} />,
-    maintenance: <MaintenanceView />,
-    updates: <UpdatesView />,
-    events: <EventsView />,
-    settings: <SettingsView dashboard={dashboard} />
+    maintenance: <MaintenanceView dashboard={dashboard} />
   }[active];
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-950">
       <aside className="fixed inset-y-0 left-0 z-20 hidden w-64 border-r border-panel-800 bg-panel-950 text-white lg:block">
         <div className="flex h-16 items-center gap-3 border-b border-white/10 px-5">
-          <div className="grid h-9 w-9 place-items-center rounded-md bg-sky-500 font-bold">T</div>
+          <div className="relative h-9 w-9 rounded-full border-2 border-sky-300">
+            <span className="absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-sky-400" />
+            <span className="absolute left-1 top-1 h-5 w-5 rounded-full border-l-2 border-t-2 border-sky-300" />
+          </div>
           <div>
-            <div className="text-sm font-semibold">TronSoftOS</div>
+            <div className="text-lg font-semibold leading-none tracking-normal">
+              <span className="text-slate-100">tron</span><span className="text-sky-300">soft</span><span className="ml-1 font-black text-white">OS</span>
+            </div>
             <div className="text-xs text-slate-400">Appliance Console</div>
           </div>
         </div>
@@ -1786,6 +1784,17 @@ export default function App() {
             <StatusPill value={dashboard.cluster.nodeRole} />
           </div>
         </header>
+        {haMaintenanceActive ? (
+          <div className="sticky top-16 z-10 border-b border-amber-300 bg-amber-100 px-4 py-3 text-sm text-amber-950 shadow-sm lg:px-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2 font-medium">
+                <AlertTriangle className="h-4 w-4" />
+                Manutencao HA ativa: failover suspenso no standby{haMaintenance.standbyHost ? ` (${haMaintenance.standbyHost})` : ''}.
+              </div>
+              <span className="text-xs uppercase tracking-normal">Reative em Manutencao &gt; Failover HA ao concluir.</span>
+            </div>
+          </div>
+        ) : null}
         <div className="p-4 lg:p-6">{View}</div>
       </main>
     </div>

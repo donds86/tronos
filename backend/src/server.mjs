@@ -22,6 +22,7 @@ const smtpSettingsPath = process.env.TRONSOFTOS_SMTP_SETTINGS || path.join(state
 const cloudflareSettingsPath = process.env.TRONSOFTOS_CLOUDFLARE_SETTINGS || path.join(stateDir, 'cloudflare-settings.json');
 const rcloneSettingsPath = process.env.TRONSOFTOS_RCLONE_SETTINGS || path.join(stateDir, 'rclone-settings.json');
 const haSyncSettingsPath = process.env.TRONSOFTOS_HA_SYNC_SETTINGS || path.join(stateDir, 'ha-sync-settings.json');
+const maintenanceStatePath = process.env.TRONSOFTOS_MAINTENANCE_STATE || path.join(stateDir, 'maintenance-state.json');
 const googleCredentialsPath = process.env.TRONSOFTOS_GOOGLE_CREDENTIALS || path.join(stateDir, 'google-drive-credentials.json');
 const googleOauthDir = process.env.TRONSOFTOS_GOOGLE_OAUTH_DIR || path.join(stateDir, 'google-oauth');
 const frontendDist = process.env.TRONSOFTOS_FRONTEND_DIST || path.join(appRoot, 'frontend/dist');
@@ -1030,6 +1031,7 @@ function clusterStatus() {
     lockPath: clusterLockPath,
     lock,
     guard,
+    maintenance: maintenanceState(),
     keepalived: {
       enabled: process.env.TRONSOFTOS_KEEPALIVED_ENABLED === 'true',
       interface: process.env.HA_INTERFACE || null,
@@ -1822,9 +1824,36 @@ function privilegedCommandArgs(command, args) {
   return { command, args };
 }
 
+function shQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
 function requireConfirmation(body, expected) {
   const confirmation = String(body.confirmation || '').trim();
   if (confirmation !== expected) throw new Error(`confirmacao invalida; digite ${expected}`);
+}
+
+function maintenanceState() {
+  return readJson(maintenanceStatePath, {
+    active: false,
+    mode: null,
+    reason: '',
+    standbyHost: null,
+    startedAt: null,
+    clearedAt: null
+  });
+}
+
+function writeMaintenanceState(next) {
+  ensureStateDir();
+  const state = {
+    ...maintenanceState(),
+    ...next,
+    updatedAt: new Date().toISOString()
+  };
+  fs.writeFileSync(maintenanceStatePath, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+  appendEvent(state.active ? 'HA_MAINTENANCE_ACTIVE' : 'HA_MAINTENANCE_CLEARED', state);
+  return state;
 }
 
 async function maintenanceStatus() {
@@ -1838,6 +1867,7 @@ async function maintenanceStatus() {
   return {
     generatedAt: new Date().toISOString(),
     cluster: clusterStatus(),
+    maintenance: maintenanceState(),
     guard: clusterGuard(),
     sync: publicHaSyncSettings(),
     local: {
@@ -1866,6 +1896,24 @@ function startStandbyKeepalived(action, body = {}) {
   if (!fs.existsSync(identityFile)) throw new Error(`chave SSH nao encontrada: ${identityFile}`);
   fs.mkdirSync(path.dirname(knownHosts), { recursive: true });
   fs.closeSync(fs.openSync(knownHosts, 'a'));
+  if (action === 'stop') {
+    writeMaintenanceState({
+      active: true,
+      mode: 'ha',
+      reason: 'failover suspenso no standby',
+      standbyHost: settings.standbyHost,
+      startedAt: new Date().toISOString(),
+      clearedAt: null
+    });
+  } else {
+    writeMaintenanceState({
+      active: false,
+      mode: 'ha',
+      reason: 'failover reativado no standby',
+      standbyHost: settings.standbyHost,
+      clearedAt: new Date().toISOString()
+    });
+  }
   return startCommandJob({
     app: 'keepalived-standby',
     action,
@@ -1886,7 +1934,44 @@ function startStandbyKeepalived(action, body = {}) {
 function startHostPower(action, body = {}) {
   if (!['reboot', 'poweroff'].includes(action)) throw new Error('acao de energia invalida');
   requireConfirmation(body, action === 'reboot' ? 'REINICIAR HOST' : 'DESLIGAR HOST');
+  const identity = nodeIdentity();
+  const settings = rawHaSyncSettings();
   const cmd = privilegedCommandArgs('/usr/local/sbin/tronsoftos-network', ['host-power', action]);
+  if ((identity.nodeRole || 'primary') === 'primary' && settings.standbyHost) {
+    const sshUser = settings.sshUser || 'tronsoftos';
+    const sshPort = String(settings.sshPort || 22);
+    const knownHosts = path.join(stateDir, 'known_hosts');
+    const identityFile = path.join(stateDir, 'ssh/id_ed25519');
+    if (!fs.existsSync(identityFile)) throw new Error(`chave SSH nao encontrada: ${identityFile}`);
+    fs.mkdirSync(path.dirname(knownHosts), { recursive: true });
+    fs.closeSync(fs.openSync(knownHosts, 'a'));
+    writeMaintenanceState({
+      active: true,
+      mode: 'ha',
+      reason: `failover suspenso automaticamente antes de ${action}`,
+      standbyHost: settings.standbyHost,
+      startedAt: new Date().toISOString(),
+      clearedAt: null
+    });
+    const sshArgs = [
+      'ssh',
+      '-p', sshPort,
+      '-i', identityFile,
+      '-o', 'IdentitiesOnly=yes',
+      '-o', 'BatchMode=yes',
+      '-o', 'StrictHostKeyChecking=accept-new',
+      '-o', `UserKnownHostsFile=${knownHosts}`,
+      `${sshUser}@${settings.standbyHost}`,
+      'sudo -n systemctl stop keepalived.service'
+    ];
+    const commandLine = [
+      ...sshArgs.map(shQuote),
+      '&&',
+      shQuote(cmd.command),
+      ...cmd.args.map(shQuote)
+    ].join(' ');
+    return startCommandJob({ app: 'host', action, command: '/bin/sh', args: ['-lc', commandLine] });
+  }
   return startCommandJob({ app: 'host', action, ...cmd });
 }
 
