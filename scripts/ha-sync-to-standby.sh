@@ -55,5 +55,9 @@ rsync -aHAX --numeric-ids \
   "${CATALOG_DIR%/}/" \
   "${SSH_USER}@${STANDBY_HOST}:${REMOTE_CATALOG_DIR%/}/"
 
+echo "[ha-sync] importando catalogo TronFire no standby"
+ssh ${SSH_BASE_OPTS} "${SSH_USER}@${STANDBY_HOST}" \
+  "TRONSOFTOS_APP_DIR='$APP_DIR' bash '$APP_DIR/scripts/tronfire-catalog-import.sh' '${REMOTE_CATALOG_DIR%/}/tronfire_catalog_latest.dump'"
+
 echo "[ha-sync] concluido $(date -Is)"
 echo "[ha-sync] log $LOG_FILE"

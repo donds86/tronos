@@ -322,6 +322,10 @@ function haSyncStatus() {
   const settings = publicHaSyncSettings();
   const lastEvent = readEvents(200).find(event => ['HA_SYNC_STARTED', 'HA_SYNC_FINISHED', 'HA_SYNC_FAILED'].includes(event.type)) || null;
   const runningJob = [...actionJobs.values()].reverse().find(job => job.app === 'ha-sync' && job.status === 'running') || null;
+  const receiverCatalogPath = settings.catalogDir || path.join(stateDir, 'tronfire-catalog');
+  const receiverBackupPath = settings.backupDir || '/opt/tronfire-storage/firebird/backups';
+  const latestCatalog = latestFileInfo(receiverCatalogPath, /\.(dump)$/i);
+  const latestBackup = latestFileInfo(receiverBackupPath, /\.(gbk|fbk|gbk\.gz|fbk\.gz|manifest\.json)$/i);
   const lastExitCode = lastEvent?.details?.exitCode;
   let status = 'disabled';
   if (runningJob) status = 'running';
@@ -339,8 +343,30 @@ function haSyncStatus() {
       exitCode: Number.isInteger(lastExitCode) ? lastExitCode : null,
       error: lastEvent.details?.error || null
     } : null,
-    runningJobId: runningJob?.id || null
+    runningJobId: runningJob?.id || null,
+    receiver: {
+      catalogDir: receiverCatalogPath,
+      backupDir: receiverBackupPath,
+      latestCatalog,
+      latestBackup
+    }
   };
+}
+
+function latestFileInfo(dirPath, pattern) {
+  try {
+    const files = fs.readdirSync(dirPath, { withFileTypes: true })
+      .filter(entry => entry.isFile() && pattern.test(entry.name))
+      .map(entry => {
+        const filePath = path.join(dirPath, entry.name);
+        const stat = fs.statSync(filePath);
+        return { name: entry.name, path: filePath, size: stat.size, modifiedAt: stat.mtime.toISOString() };
+      })
+      .sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
+    return files[0] || null;
+  } catch {
+    return null;
+  }
 }
 
 function normalizeHaSyncSettings(body) {

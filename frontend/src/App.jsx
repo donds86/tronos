@@ -488,6 +488,7 @@ function ClusterView({ dashboard }) {
     nodeRole: identity.nodeRole || cluster.nodeRole || 'primary',
     deploymentMode: identity.deploymentMode || cluster.mode || 'simple'
   };
+  const isSyncReceiver = values.deploymentMode === 'ha' && ['standby', 'recovery'].includes(values.nodeRole);
   const lockValues = lockForm || {
     cluster: lock.cluster || values.clusterId,
     active_node: lock.active_node || (values.nodeRole === 'primary' ? values.nodeName : ''),
@@ -703,23 +704,34 @@ function ClusterView({ dashboard }) {
             </Card>
           </div>
           <div className="grid gap-5 xl:grid-cols-2">
-            <Card title="Sync HA" icon={RefreshCw} action={<StatusPill value={syncStatus.status || 'disabled'} />}>
+            <Card title="Sync HA" icon={RefreshCw} action={<StatusPill value={isSyncReceiver ? 'receptor' : (syncStatus.status || 'disabled')} />}>
               <div className="grid gap-3 text-sm">
-                {[
+                {(isSyncReceiver ? [
+                  ['Status', 'receptor'],
+                  ['Modo', 'recebe dados do primary'],
+                  ['Catalogo recebido', syncStatus.receiver?.latestCatalog?.modifiedAt ? formatDateTime(syncStatus.receiver.latestCatalog.modifiedAt) : 'aguardando'],
+                  ['Backup recebido', syncStatus.receiver?.latestBackup?.modifiedAt ? formatDateTime(syncStatus.receiver.latestBackup.modifiedAt) : 'aguardando'],
+                  ['Diretorio catalogo', syncStatus.receiver?.catalogDir || '/opt/tronos/state/tronfire-catalog'],
+                  ['Diretorio backups', syncStatus.receiver?.backupDir || '/opt/tronfire-storage/firebird/backups']
+                ] : [
                   ['Status', syncStatus.status || (syncStatus.enabled ? 'enabled' : 'disabled')],
                   ['Standby', syncStatus.standbyHost || 'nao configurado'],
                   ['Usuario SSH', syncStatus.sshUser || 'tronsoftos'],
                   ['Ultimo evento', syncStatus.lastEvent?.type || 'nenhum'],
                   ['Quando', syncStatus.lastEvent?.createdAt ? formatDateTime(syncStatus.lastEvent.createdAt) : '-'],
                   ['Exit code', syncStatus.lastEvent?.exitCode ?? '-']
-                ].map(([label, value]) => (
+                ]).map(([label, value]) => (
                   <div key={label} className="flex items-center justify-between gap-4 border-b border-slate-100 pb-2">
                     <span className="text-slate-500">{label}</span>
-                    <span className="text-right font-medium text-slate-950">{value}</span>
+                    <span className="min-w-0 truncate text-right font-medium text-slate-950">{value}</span>
                   </div>
                 ))}
               </div>
-              {syncStatus.status === 'failed' ? (
+              {isSyncReceiver ? (
+                <div className={`mt-4 rounded-md border px-3 py-2 text-sm ${syncStatus.receiver?.latestCatalog ? 'border-green-200 bg-green-50 text-green-700' : 'border-sky-200 bg-sky-50 text-sky-800'}`}>
+                  {syncStatus.receiver?.latestCatalog ? 'Este standby ja recebeu catalogo do primary.' : 'Aguardando a primeira sincronizacao enviada pelo primary.'}
+                </div>
+              ) : syncStatus.status === 'failed' ? (
                 <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                   Ultima sincronizacao falhou. Verifique se o pareamento foi importado no standby e se o SSH para {syncStatus.sshUser || 'tronsoftos'}@{syncStatus.standbyHost || 'standby'} esta autorizado.
                 </div>
