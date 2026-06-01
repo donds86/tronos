@@ -30,6 +30,8 @@ const actionJobs = new Map();
 const maxActionLogLength = 1024 * 128;
 const dockerConfigDir = process.env.TRONSOFTOS_DOCKER_CONFIG || path.join(stateDir, 'docker-config');
 let rcloneQuotaCache = { key: null, checkedAt: 0, value: null };
+let haSyncSchedulerTimer = null;
+let lastAutoHaSyncStartedAt = 0;
 
 function json(reply, status, body) {
   const payload = JSON.stringify(body, null, 2);
@@ -295,6 +297,8 @@ function sameIpv4Subnet(left, right) {
 function rawHaSyncSettings() {
   return {
     enabled: false,
+    autoEnabled: false,
+    intervalMinutes: 10,
     standbyHost: process.env.HA_SYNC_STANDBY_HOST || '',
     sshUser: process.env.HA_SYNC_SSH_USER || 'tronsoftos',
     sshPort: Number(process.env.HA_SYNC_SSH_PORT || 22),
@@ -309,6 +313,8 @@ function rawHaSyncSettings() {
 function publicHaSyncSettings(settings = rawHaSyncSettings()) {
   return {
     enabled: settings.enabled === true,
+    autoEnabled: settings.autoEnabled === true,
+    intervalMinutes: Number(settings.intervalMinutes || 10),
     standbyHost: settings.standbyHost || '',
     sshUser: settings.sshUser || 'tronsoftos',
     sshPort: Number(settings.sshPort || 22),
@@ -374,6 +380,8 @@ function normalizeHaSyncSettings(body) {
   const current = rawHaSyncSettings();
   const next = {
     enabled: body.enabled === true,
+    autoEnabled: body.autoEnabled === true,
+    intervalMinutes: Number(body.intervalMinutes || current.intervalMinutes || 10),
     standbyHost: String(body.standbyHost || '').trim(),
     sshUser: String(body.sshUser || current.sshUser || 'tronsoftos').trim(),
     sshPort: Number(body.sshPort || current.sshPort || 22),
@@ -383,6 +391,8 @@ function normalizeHaSyncSettings(body) {
     catalogDir: String(body.catalogDir || current.catalogDir || path.join(stateDir, 'tronfire-catalog')).trim()
   };
   if (next.enabled && !next.standbyHost) throw new Error('host standby nao informado');
+  if (next.autoEnabled && !next.enabled) throw new Error('habilite o Sync HA antes de ativar o automatico');
+  if (!Number.isInteger(next.intervalMinutes) || next.intervalMinutes < 2 || next.intervalMinutes > 1440) throw new Error('intervalo automatico deve ficar entre 2 e 1440 minutos');
   if (!/^[A-Za-z0-9_.@-]{1,80}$/.test(next.sshUser)) throw new Error('usuario SSH invalido');
   if (!Number.isInteger(next.sshPort) || next.sshPort < 1 || next.sshPort > 65535) throw new Error('porta SSH invalida');
   for (const key of ['remoteBackupDir', 'remoteCatalogDir', 'backupDir', 'catalogDir']) {
@@ -724,6 +734,75 @@ function rcloneTarget(settings) {
   const remote = String(settings.remote || '').replace(/:+$/g, '');
   const remotePath = String(settings.path || '').replace(/^\/+|\/+$/g, '');
   return remotePath ? `${remote}:${remotePath}` : `${remote}:`;
+}
+
+function normalizeRemoteBackupPath(value) {
+  const remotePath = String(value || '').trim().replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!remotePath || remotePath.includes('..') || remotePath.startsWith('-')) throw new Error('backup remoto invalido');
+  if (!/\.(gbk|fbk|gbk\.gz|fbk\.gz|manifest\.json)$/i.test(remotePath)) throw new Error('tipo de backup remoto invalido');
+  return remotePath;
+}
+
+function rcloneRemoteObject(settings, remotePath) {
+  const target = rcloneTarget(settings).replace(/\/+$/g, '');
+  return `${target}/${remotePath.replace(/^\/+/, '')}`;
+}
+
+async function rcloneRemoteBackups() {
+  const settings = rawRcloneSettings();
+  if (!settings.remote) throw new Error('remote rclone nao configurado');
+  if (!fs.existsSync(settings.config || defaultRcloneConfigPath())) throw new Error('rclone.conf nao encontrado');
+  const out = await run(settings.bin || '/usr/bin/rclone', [
+    'lsjson',
+    rcloneTarget(settings),
+    '--files-only',
+    '--recursive',
+    '--include', '*.gbk',
+    '--include', '*.fbk',
+    '--include', '*.gbk.gz',
+    '--include', '*.fbk.gz',
+    '--include', '*.manifest.json',
+    '--config', settings.config || defaultRcloneConfigPath()
+  ], {
+    timeout: 120_000,
+    maxBuffer: 1024 * 1024 * 10
+  });
+  const rows = JSON.parse(out.stdout || '[]');
+  const files = Array.isArray(rows) ? rows
+    .filter(item => !item.IsDir && /\.(gbk|fbk|gbk\.gz|fbk\.gz|manifest\.json)$/i.test(item.Path || item.Name || ''))
+    .map(item => ({
+      name: item.Name || path.basename(item.Path || ''),
+      path: item.Path || item.Name || '',
+      size: Number(item.Size || 0),
+      modifiedAt: item.ModTime || null,
+      mimeType: item.MimeType || null
+    }))
+    .sort((a, b) => new Date(b.modifiedAt || 0) - new Date(a.modifiedAt || 0)) : [];
+  return { target: rcloneTarget(settings), files };
+}
+
+function startRcloneRemoteBackupDownload(body = {}) {
+  const settings = rawRcloneSettings();
+  if (!settings.remote) throw new Error('remote rclone nao configurado');
+  if (!fs.existsSync(settings.config || defaultRcloneConfigPath())) throw new Error('rclone.conf nao encontrado');
+  const remotePath = normalizeRemoteBackupPath(body.path);
+  const backupDir = process.env.FIREBIRD_BACKUP_DIR || '/opt/tronfire-storage/firebird/backups';
+  const localName = path.basename(remotePath).replace(/[^a-zA-Z0-9_.-]/g, '_');
+  const localPath = path.join(backupDir, localName);
+  fs.mkdirSync(backupDir, { recursive: true });
+  return startCommandJob({
+    app: 'rclone',
+    action: 'download',
+    command: settings.bin || '/usr/bin/rclone',
+    args: [
+      'copyto',
+      rcloneRemoteObject(settings, remotePath),
+      localPath,
+      '--config',
+      settings.config || defaultRcloneConfigPath()
+    ],
+    eventPrefix: 'RCLONE'
+  });
 }
 
 async function rcloneTest() {
@@ -1761,6 +1840,8 @@ function startHaSync() {
   const settings = rawHaSyncSettings();
   if (settings.enabled !== true) throw new Error('sync HA desabilitado');
   if (!settings.standbyHost) throw new Error('host standby nao configurado');
+  const runningJob = [...actionJobs.values()].reverse().find(job => job.app === 'ha-sync' && job.status === 'running');
+  if (runningJob) return publicActionJob(runningJob);
   const script = path.join(appRoot, 'scripts/ha-sync-to-standby.sh');
   if (!fs.existsSync(script)) throw new Error(`script nao encontrado: ${script}`);
   const id = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
@@ -1807,6 +1888,35 @@ function startHaSync() {
   });
   appendEvent('HA_SYNC_STARTED', { standbyHost: settings.standbyHost, sshUser: settings.sshUser, sshPort: settings.sshPort });
   return publicActionJob(job);
+}
+
+function shouldRunAutoHaSync(settings) {
+  if (!settings.enabled || !settings.autoEnabled || !settings.standbyHost) return false;
+  const identity = nodeIdentity();
+  if (identity.deploymentMode === 'ha' && clusterGuard().canServeProduction !== true) return false;
+  const runningJob = [...actionJobs.values()].reverse().find(job => job.app === 'ha-sync' && job.status === 'running');
+  if (runningJob) return false;
+  const intervalMs = Math.max(Number(settings.intervalMinutes || 10), 2) * 60 * 1000;
+  const lastEvent = readEvents(200).find(event => ['HA_SYNC_STARTED', 'HA_SYNC_FINISHED', 'HA_SYNC_FAILED'].includes(event.type)) || null;
+  const lastEventAt = lastEvent?.createdAt ? new Date(lastEvent.createdAt).getTime() : 0;
+  const lastRunAt = Math.max(lastEventAt || 0, lastAutoHaSyncStartedAt || 0);
+  return !lastRunAt || Date.now() - lastRunAt >= intervalMs;
+}
+
+function startHaSyncScheduler() {
+  if (haSyncSchedulerTimer) return;
+  haSyncSchedulerTimer = setInterval(() => {
+    try {
+      const settings = publicHaSyncSettings();
+      if (!shouldRunAutoHaSync(settings)) return;
+      lastAutoHaSyncStartedAt = Date.now();
+      appendEvent('HA_SYNC_AUTO_TRIGGERED', { standbyHost: settings.standbyHost, intervalMinutes: settings.intervalMinutes });
+      startHaSync();
+    } catch (err) {
+      appendEvent('HA_SYNC_AUTO_SKIPPED', { error: err.message });
+    }
+  }, 60 * 1000);
+  if (typeof haSyncSchedulerTimer.unref === 'function') haSyncSchedulerTimer.unref();
 }
 
 function startCommandJob({ app, action, command, args, env = process.env, cwd = appRoot, eventPrefix = 'MAINTENANCE' }) {
@@ -2134,6 +2244,8 @@ async function handleApi(req, reply, url) {
   if (req.method === 'POST' && url.pathname === '/api/backups/rclone/test') return json(reply, 200, await rcloneTest());
   if (req.method === 'POST' && url.pathname === '/api/backups/rclone/upload-test') return json(reply, 200, await rcloneUploadTest());
   if (req.method === 'POST' && url.pathname === '/api/backups/rclone/token') return json(reply, 200, saveGoogleDriveToken(await readBody(req)));
+  if (req.method === 'GET' && url.pathname === '/api/backups/rclone/remote-files') return json(reply, 200, await rcloneRemoteBackups());
+  if (req.method === 'POST' && url.pathname === '/api/backups/rclone/download') return json(reply, 202, { ok: true, job: startRcloneRemoteBackupDownload(await readBody(req)) });
   if (req.method === 'GET' && url.pathname === '/api/backups/google/credentials') return json(reply, 200, publicGoogleCredentials());
   if (req.method === 'POST' && url.pathname === '/api/backups/google/credentials') return json(reply, 200, saveGoogleCredentials(await readBody(req)));
   if (req.method === 'POST' && url.pathname === '/api/backups/google/start') return json(reply, 200, startGoogleDriveOauth(req, await readBody(req)));
@@ -2192,6 +2304,7 @@ const server = http.createServer(async (req, reply) => {
 
 server.listen(port, '0.0.0.0', () => {
   ensureStateDir();
+  startHaSyncScheduler();
   appendEvent('TRONSOFTOS_STARTED', { port });
   console.log(`TronSoftOS listening on 0.0.0.0:${port}`);
 });
